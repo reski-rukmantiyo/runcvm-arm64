@@ -287,6 +287,9 @@ export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 if [ -f /.runcvm/config ]; then
   # Extract RUNCVM_LOG_LEVEL from config (format: declare -x RUNCVM_LOG_LEVEL="VALUE")
   RUNCVM_LOG_LEVEL=$(grep '^declare -x RUNCVM_LOG_LEVEL=' /.runcvm/config 2>/dev/null | sed 's/^declare -x RUNCVM_LOG_LEVEL="\(.*\)"$/\1/' | head -1)
+  
+  # Extract RUNCVM_SYSTEMD
+  RUNCVM_SYSTEMD=$(grep '^declare -x RUNCVM_SYSTEMD=' /.runcvm/config 2>/dev/null | sed 's/^declare -x RUNCVM_SYSTEMD="\(.*\)"$/\1/' | head -1)
 fi
 
 # Default to OFF if not set (matches host default for silent operation)
@@ -373,7 +376,15 @@ mount -t tmpfs tmpfs /dev/shm 2>/dev/null || true
 # Create tmpfs for /run and /tmp
 mkdir -p /run /tmp
 mount -t tmpfs tmpfs /run 2>/dev/null || true
-mount -t tmpfs tmpfs /tmp 2>/dev/null || true
+# Create tmpfs for /run and /tmp
+mkdir -p /run /tmp
+mount -t tmpfs tmpfs /run -o mode=0755,nosuid,nodev 2>/dev/null || true
+mount -t tmpfs tmpfs /tmp -o mode=1777,strictatime,nosuid,nodev 2>/dev/null || true
+mkdir -p /run/lock
+
+# Mount cgroup v2 (Systemd requirement)
+mkdir -p /sys/fs/cgroup
+mount -t cgroup2 cgroup2 /sys/fs/cgroup 2>/dev/null || true
 
 # Create symlinks
 # Create symlinks
@@ -759,6 +770,60 @@ else
     "$@"
     return $?
   }
+fi
+
+# Check for Systemd
+SYSTEMD_BIN=""
+if [ -x /usr/lib/systemd/systemd ]; then
+  SYSTEMD_BIN="/usr/lib/systemd/systemd"
+elif [ -x /lib/systemd/systemd ]; then
+  SYSTEMD_BIN="/lib/systemd/systemd"
+elif [ -x /sbin/init ] && [ "$(/sbin/init --version 2>/dev/null | grep -c systemd)" -gt 0 ]; then
+  SYSTEMD_BIN="/sbin/init"
+fi
+
+# Detect if we should run systemd
+# Priority:
+# 1. RUNCVM_SYSTEMD=1 env var
+# 2. image has systemd installed (and we decide to auto-enable? No, safer to require flag for now or just check if entrypoint is empty/default)
+
+echo "RunCVM-FC init: Checking for Systemd..."
+echo "RunCVM-FC init:   Detailed check:"
+ls -la /usr/lib/systemd/systemd 2>/dev/null || echo "  /usr/lib/systemd/systemd not found"
+ls -la /lib/systemd/systemd 2>/dev/null || echo "  /lib/systemd/systemd not found"
+ls -la /sbin/init 2>/dev/null || echo "  /sbin/init not found"
+echo "  PATH=$PATH"
+echo "RunCVM-FC init:   SYSTEMD_BIN='$SYSTEMD_BIN'"
+echo "RunCVM-FC init:   RUNCVM_SYSTEMD='$RUNCVM_SYSTEMD'"
+
+SHOULD_RUN_SYSTEMD=0
+if [ "$RUNCVM_SYSTEMD" = "1" ] || [ "$RUNCVM_SYSTEMD" = "true" ]; then
+  SHOULD_RUN_SYSTEMD=1
+elif [ -n "$SYSTEMD_BIN" ] && [ ! -f /.runcvm-entrypoint ]; then
+  # If no custom entrypoint and systemd exists, maybe?
+  # Let's stick to explicit flag for now to avoid breaking existing generic containers
+  :
+fi
+echo "RunCVM-FC init:   SHOULD_RUN_SYSTEMD='$SHOULD_RUN_SYSTEMD'"
+
+if [ "$SHOULD_RUN_SYSTEMD" = "1" ] && [ -n "$SYSTEMD_BIN" ]; then
+   echo "RunCVM-FC init: Booting with Systemd ($SYSTEMD_BIN)..."
+   
+   # Systemd requirements:
+   # 1. PID 1 (we are)
+   # 2. cgroup2 mounted (we did)
+   # 3. /run mounted (we did)
+   # 4. signal handling (systemd handles this)
+   
+   # Set container environment type
+   export container=docker
+   
+   # Execute systemd - this REPLACES the init process
+   # We use exec so systemd becomes PID 1
+   exec "$SYSTEMD_BIN" --unit=multi-user.target
+   
+   # If we return, exec failed
+   echo "RunCVM-FC init: Failed to exec systemd: $?"
 fi
 
 if [ -f /.runcvm-entrypoint ] && [ -s /.runcvm-entrypoint ]; then
