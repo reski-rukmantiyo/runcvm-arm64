@@ -1291,6 +1291,20 @@ NETEOF
   log "    guest_cid: 3"
   log "    uds_path: /run/firecracker.vsock"
   
+
+  # Build balloon config if enabled
+  # amount_mib: 0 means the balloon is empty (guest has full memory)
+  # deflate_on_oom: true allows the guest to reclaim memory if it runs out
+  # stats_polling_interval_s: 1 enables memory stats reporting
+  local balloon_config=""
+  if [ "${RUNCVM_ENABLE_BALLOON:-false}" = "true" ]; then
+    local balloon_size="${RUNCVM_BALLOON_SIZE_MIB:-0}"
+    log "  Memory Ballooning: ENABLED (Size: ${balloon_size}MiB)"
+    balloon_config=',"balloon":{"amount_mib":'$balloon_size',"deflate_on_oom":true,"stats_polling_interval_s":1}'
+  else
+    log "  Memory Ballooning: DISABLED (default)"
+  fi
+
   # Create Firecracker config file
   cat > "$FIRECRACKER_CONFIG" << CFGEOF
 {
@@ -1312,10 +1326,10 @@ NETEOF
       "is_read_only": false
     }
   ],
-  "machine-config": {
-    "vcpu_count": $vcpu_count,
-    "mem_size_mib": $mem_mb
-  }${network_config}${vsock_config}
+    "machine-config": {
+      "vcpu_count": $vcpu_count,
+      "mem_size_mib": $mem_mb
+    }${network_config}${vsock_config}${balloon_config}
 }
 CFGEOF
 
