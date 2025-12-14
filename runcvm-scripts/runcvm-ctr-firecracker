@@ -78,44 +78,7 @@ error() {
   exit 1
 }
 
-create_volumes_from_vm_mounts() {
-  local volumes_file="/.runcvm/volumes"
-  local vm_mountpoint="${RUNCVM_VM_MOUNTPOINT:-/vm}"
-  
-  log "Creating volumes file from mounted directories..."
-  
-  > "$volumes_file"
-  
-  # Look at directories under /vm that are mountpoints
-  for dir in "$vm_mountpoint"/*; do
-    [ -d "$dir" ] || continue
-    
-    # Skip system directories
-    case "$dir" in
-      */etc|*/proc|*/sys|*/dev|*/run|*/.runcvm) continue ;;
-    esac
-    
-    # Check if it's a mountpoint (different device than parent)
-    if busybox mountpoint -q "$dir" 2>/dev/null; then
-      local container_path="${dir#$vm_mountpoint}"
-      # Get the source from findmnt or /proc/mounts
-      local source=$(busybox awk -v mp="$dir" '$2 == mp {print $1; exit}' /proc/mounts)
-      
-      # If source is a device, try to find the actual bind source
-      if [ -n "$source" ]; then
-        log "  Found mountpoint: $dir (source: $source)"
-        echo "${dir}:${container_path}:rw" >> "$volumes_file"
-      fi
-    fi
-  done
-  
-  if [ -s "$volumes_file" ]; then
-    log "Volumes file created with $(busybox wc -l < "$volumes_file") entries"
-    busybox cat "$volumes_file" | while read line; do log "  $line"; done
-  else
-    log "No volume mountpoints detected"
-  fi
-}
+
 
 setup_nfs_volumes() {
   # NFS volume sync using HOST-SIDE unfsd
@@ -212,12 +175,7 @@ main() {
   # STEP 0: Extract volumes and start 9P servers BEFORE creating rootfs
   # ==========================================================================
   
-  # Create volumes file if runtime didn't create it
-  # NOTE: Runtime creates at $ROOT/.runcvm/volumes which is accessible via /vm/.runcvm/volumes
-  # because /.runcvm is a tmpfs that hides $ROOT/.runcvm
-  if [ ! -f "/vm/.runcvm/volumes" ]; then
-    create_volumes_from_vm_mounts
-  fi
+
 
   setup_nfs_volumes
 
@@ -834,7 +792,7 @@ fi
 # OR if run_with_tty was not an exec (which it is currently)
 RET=$?
 echo "RunCVM-FC init: Entrypoint exited with code $RET"
-busybox reboot -f
+busybox poweroff -f
 INITEOF
   busybox chmod +x "$init_script"
   
@@ -976,7 +934,8 @@ WATCHEOF
   fi
 
   # Copy kernel modules for 9P support from Alpine kernel
-  log "  Copying 9P kernel modules..."
+
+  log "  Copying kernel modules..."
   local fc_modules_dir="$RUNCVM_GUEST/kernels/firecracker/latest/modules"
   if [ -d "$fc_modules_dir" ]; then
     # Find the kernel version directory
@@ -986,15 +945,6 @@ WATCHEOF
       
       # Create modules directory in staging
       busybox mkdir -p "${staging_dir}/lib/modules/$kernel_ver"
-      
-      # Copy 9P modules specifically
-      if [ -d "$fc_modules_dir/$kernel_ver/kernel/net/9p" ]; then
-        busybox mkdir -p "${staging_dir}/lib/modules/$kernel_ver/kernel/net"
-        busybox cp -a "$fc_modules_dir/$kernel_ver/kernel/net/9p" \
-          "${staging_dir}/lib/modules/$kernel_ver/kernel/net/"
-        log "      Copied 9P modules"
-      fi
-      
       # Copy vsock modules if they exist
       if [ -d "$fc_modules_dir/$kernel_ver/kernel/net/vmw_vsock" ]; then
         busybox mkdir -p "${staging_dir}/lib/modules/$kernel_ver/kernel/net"
@@ -1176,12 +1126,12 @@ NETEOF
   
   # Build boot arguments - use /init which we created in the rootfs
   # Note: 9p.debug=0xff enables verbose 9P logging to debug transport issues
-  local boot_args="init=/init console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw 9p.debug=0xff"
-  
+  local boot_args="init=/init console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw"
   # Add 'quiet' to suppress kernel boot messages when not in DEBUG mode
   if [ "$RUNCVM_LOG_LEVEL" != "DEBUG" ]; then
-    boot_args="init=/init console=ttyS0 quiet reboot=k panic=1 pci=off root=/dev/vda rw"
+    boot_args="$boot_args quiet"
   fi
+
   
   # Parse memory size (remove 'M' suffix if present)
   local mem_mb="${RUNCVM_MEM_SIZE%M}"
