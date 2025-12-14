@@ -834,7 +834,7 @@ fi
 # OR if run_with_tty was not an exec (which it is currently)
 RET=$?
 echo "RunCVM-FC init: Entrypoint exited with code $RET"
-busybox reboot -f
+busybox poweroff -f
 INITEOF
   busybox chmod +x "$init_script"
   

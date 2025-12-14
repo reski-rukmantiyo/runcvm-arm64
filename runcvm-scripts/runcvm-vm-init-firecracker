@@ -307,11 +307,11 @@ if [ -f /.runcvm/entrypoint ]; then
     echo o > /proc/sysrq-trigger 2>/dev/null  # poweroff
   fi
   
-  # Method 2: reboot syscall via busybox or coreutils
-  reboot -f 2>/dev/null || /sbin/reboot -f 2>/dev/null || true
-  
-  # Method 3: Direct poweroff
+  # Method 2: Direct poweroff (preferred over reboot)
   poweroff -f 2>/dev/null || /sbin/poweroff -f 2>/dev/null || true
+
+  # Method 3: reboot syscall (fallback, though likely to restart VM)
+  reboot -f 2>/dev/null || /sbin/reboot -f 2>/dev/null || true
   
   # If we get here, sleep briefly and let kernel handle it
   # The kernel panic on init exit is actually fine - Firecracker sees it as clean exit
