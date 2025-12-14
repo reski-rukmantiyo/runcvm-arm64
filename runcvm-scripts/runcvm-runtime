@@ -439,7 +439,7 @@ if [ "$COMMAND" = "create" ]; then
   # CREATE VOLUMES FILE FOR FIRECRACKER 9P MOUNTS
   # ==========================================================================
   log "DEBUG: Checking RUNCVM_HYPERVISOR env..."
-  HYPERVISOR="$(get_config_env RUNCVM_HYPERVISOR)"
+  HYPERVISOR="$(get_config_env RUNCVM_HYPERVISOR firecracker)"
   log "DEBUG: HYPERVISOR=$HYPERVISOR"
   log "DEBUG: ROOT=$ROOT"
   
@@ -641,7 +641,7 @@ if [ "$COMMAND" = "create" ]; then
 
     # Check if Firecracker hypervisor is being used - skip module mounting since
     # Firecracker uses its own kernel with built-in modules (no external .ko files needed)
-    RUNCVM_HYPERVISOR=$(get_config_env 'RUNCVM_HYPERVISOR')
+    RUNCVM_HYPERVISOR=$(get_config_env 'RUNCVM_HYPERVISOR' 'firecracker')
     if [ "$RUNCVM_HYPERVISOR" = "firecracker" ]; then
       log "Firecracker hypervisor detected - skipping kernel module bind-mount"
       # Set dummy values for logging
