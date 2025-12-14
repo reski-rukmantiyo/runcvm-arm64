@@ -1,279 +1,3 @@
-#!/.runcvm/guest/bin/bash
-
-# RunCVM Firecracker Launcher
-# Launches a Firecracker microVM using config file mode (for console output)
-#
-# STRATEGY: Copy container files to /dev/shm, then create rootfs on overlay
-# This avoids the self-copy problem where mke2fs would copy the rootfs into itself
-
-set -o errexit -o pipefail
-
-# Load original environment
-. /.runcvm/config
-
-# Load defaults
-. $RUNCVM_GUEST/scripts/runcvm-ctr-defaults && unset PATH
-
-FIRECRACKER_BIN="$RUNCVM_GUEST/sbin/firecracker"
-FIRECRACKER_CONFIG="/run/.firecracker-config.json"
-NFS_CONFIG="/.runcvm/nfs-mounts"
-NFS_PORT_MIN=1000
-NFS_PORT_MAX=1050
-
-# ============================================================
-# LOGGING SYSTEM
-# Severity levels: DEBUG, INFO, ERROR, OFF
-# Control via: RUNCVM_LOG_LEVEL environment variable
-# ============================================================
-
-# Default log level (can be overridden by environment)
-RUNCVM_LOG_LEVEL="${RUNCVM_LOG_LEVEL:-OFF}"
-
-# Log severity levels (numeric for comparison)
-declare -A LOG_LEVELS=(
-  [DEBUG]=0
-  [INFO]=1
-  [LOG]=1      # Alias for INFO
-  [ERROR]=2
-  [OFF]=999
-)
-
-# Get numeric level for current log level (default to OFF=999)
-CURRENT_LOG_LEVEL="${LOG_LEVELS[$RUNCVM_LOG_LEVEL]:-999}"
-
-# Core logging function
-_log() {
-  local severity="$1"
-  shift
-  local message="$*"
-  local severity_level="${LOG_LEVELS[$severity]:-1}"
-  
-  # Only log if severity meets threshold
-  if [ "$severity_level" -ge "$CURRENT_LOG_LEVEL" ]; then
-    echo "[$(busybox date '+%Y-%m-%d %H:%M:%S')] [RunCVM-FC] [$severity] $message" >&2
-  fi
-}
-
-# Convenience functions for different severity levels
-log_debug() {
-  _log DEBUG "$@"
-}
-
-log_info() {
-  _log INFO "$@"
-}
-
-log() {
-  # Default log function - maps to INFO for backward compatibility
-  _log INFO "$@"
-}
-
-log_error() {
-  _log ERROR "$@"
-}
-
-error() {
-  # ALWAYS log errors to stderr, regardless of log level
-  echo "[$(busybox date '+%Y-%m-%d %H:%M:%S')] [RunCVM-FC] [ERROR] $@" >&2
-  exit 1
-}
-
-
-
-setup_nfs_volumes() {
-  # NFS volume sync using HOST-SIDE unfsd
-  # Architecture:
-  #   Host: runcvm-runtime starts unfsd daemon and sets RUNCVM_NFS_VOLUMES env var
-  #   Container: reads env var and writes NFS config for guest VM
-  #   Guest: mounts via NFS client (kernel built-in)
-  #
-  # RUNCVM_NFS_VOLUMES format: src:dst:port|src2:dst2:port2|...
-  
-  local nfs_config="$NFS_CONFIG"
-  
-  # DEBUG: Show what we have (only if log level is DEBUG)
-  if [ "$RUNCVM_LOG_LEVEL" = "DEBUG" ]; then
-    echo "[DEBUG] setup_nfs_volumes checking env var" >&2
-    echo "[DEBUG] RUNCVM_NFS_VOLUMES=${RUNCVM_NFS_VOLUMES:-<not set>}" >&2
-  fi
-  
-  # Read from environment variable (set by runcvm-runtime)
-  if [ -n "$RUNCVM_NFS_VOLUMES" ]; then
-    > "$nfs_config"
-    
-    log INFO "Setting up NFS volumes from RUNCVM_NFS_VOLUMES env"
-    
-    # Parse pipe-separated entries
-    echo "$RUNCVM_NFS_VOLUMES" | busybox tr '|' '\n' | while IFS=: read -r src dst port; do
-      if [ -z "$src" ]; then continue; fi
-      if [ -z "$port" ]; then port="2049"; fi
-      
-      log INFO "  Volume: $src -> $dst (port $port)"
-      if [ "$RUNCVM_LOG_LEVEL" = "DEBUG" ]; then
-         echo "[DEBUG] NFS config line: $src:$dst:$port" >&2
-      fi
-      
-      # Write config for guest (format: src:dst:port)
-      echo "$src:$dst:$port" >> "$nfs_config"
-    done
-    
-    log INFO "  NFS config written to $nfs_config"
-    if [ "$RUNCVM_LOG_LEVEL" = "DEBUG" ]; then
-      echo "[DEBUG] Final nfs_config: $(busybox cat $nfs_config)" >&2
-    fi
-    
-  else
-    log INFO "RUNCVM_NFS_VOLUMES not set, skipping NFS volume setup"
-  fi
-}
-
-cleanup_nfs_volumes() {
-  # NFS cleanup is handled by runcvm-runtime on container stop
-  # Nothing to do here
-  :
-}
-
-trap cleanup_nfs_volumes EXIT SIGTERM SIGINT
-
-# Create rootfs image from a source directory
-create_rootfs_from_dir() {
-  local source_dir="$1"
-  local image_path="$2"
-  local size_mb="$3"
-  
-  log "Creating ext4 rootfs: $image_path (${size_mb}MB) from $source_dir"
-  
-  # Create sparse file
-  if ! busybox truncate -s "${size_mb}M" "$image_path"; then
-    error "Failed to create sparse file"
-  fi
-  
-  # Create ext4 filesystem populated with source directory contents
-  if [ "$RUNCVM_LOG_LEVEL" = "DEBUG" ]; then
-    # Show mke2fs output in debug mode
-    if ! mke2fs -F -t ext4 -E root_owner=0:0 -d "$source_dir" "$image_path" 2>&1; then
-      log "mke2fs failed"
-      busybox rm -f "$image_path"
-      return 1
-    fi
-  else
-    # Silent mode - redirect to /dev/null
-    if ! mke2fs -F -t ext4 -E root_owner=0:0 -d "$source_dir" "$image_path" >/dev/null 2>&1; then
-      log_error "mke2fs failed"
-      busybox rm -f "$image_path"
-      return 1
-    fi
-  fi
-  log "Rootfs created successfully"
-  return 0
-}
-
-# Main function
-main() {
-  log "Starting Firecracker microVM launcher..."
-  # ==========================================================================
-  # STEP 0: Extract volumes and start 9P servers BEFORE creating rootfs
-  # ==========================================================================
-  
-
-
-  setup_nfs_volumes
-
-  log_debug "NFS_CONFIG=$NFS_CONFIG"
-  if [ -f "$NFS_CONFIG" ]; then
-    log_debug "Contents of $NFS_CONFIG:"
-    busybox cat "$NFS_CONFIG" 2>&1 | while read line; do log_debug "  $line"; done
-  else
-    log_debug "NFS_CONFIG file does not exist (no volumes)"
-  fi
-  
-  # Check for Firecracker binary
-  if [ ! -x "$FIRECRACKER_BIN" ]; then
-    error "Firecracker binary not found: $FIRECRACKER_BIN"
-  fi
-  
-  # ==========================================================================
-  # STRATEGY: Copy container files to /dev/shm, then create rootfs on overlay
-  # ==========================================================================
-  # Problem: /vm is a bind mount of /, so any file at /x is also at /vm/x
-  #          This causes mke2fs -d /vm to copy the rootfs into itself
-  #
-  # Solution: 
-  #   1. Copy /vm contents to /dev/shm/rootfs-staging (separate tmpfs)
-  #   2. Create rootfs at /rootfs.ext4 (on overlay, has disk space)
-  #   3. mke2fs reads from /dev/shm, writes to /rootfs.ext4
-  #   4. No self-copy because source (/dev/shm) != destination parent (/)
-  # ==========================================================================
-  
-  # Use /tmp for staging instead of /dev/shm to avoid ENOSPC on large images
-  local staging_dir="/tmp/rootfs-staging"
-  local rootfs_path="/rootfs.ext4"
-  
-  # Calculate source size (excluding .runcvm which has RunCVM binaries)
-  log "Calculating container size (excluding .runcvm)..."
-  
-  local source_size=$(busybox du -sm --exclude='.runcvm' "$RUNCVM_VM_MOUNTPOINT" 2>/dev/null | busybox cut -f1)
-  [ -z "$source_size" ] && source_size=100
-  
-  log "Container filesystem size: ${source_size}MB"
-  
-  # Check if /dev/shm has enough space for staging
-  local shm_avail=$(busybox df -m /dev/shm 2>/dev/null | busybox awk 'NR==2 {print $4}')
-  local shm_needed=$(( source_size + 50 ))  # Add 50MB buffer
-  
-  log "/dev/shm available: ${shm_avail}MB, need for staging: ${shm_needed}MB"
-  
-  if [ "$shm_avail" -lt "$shm_needed" ]; then
-    log ""
-    log "============================================================"
-    log "ERROR: /dev/shm too small for staging"
-    log "============================================================"
-    log ""
-    log "Container size: ${source_size}MB"
-    log "/dev/shm available: ${shm_avail}MB"
-    log "/dev/shm is sized by the -m (memory) flag"
-    log ""
-    log "SOLUTION: Increase VM memory to at least ${shm_needed}m"
-    log ""
-    log "  docker run --runtime=runcvm -m ${shm_needed}m \\"
-    log "    -e RUNCVM_HYPERVISOR=firecracker nginx"
-    log ""
-    log "============================================================"
-    error "Insufficient /dev/shm for staging (need ${shm_needed}MB, have ${shm_avail}MB)"
-  fi
-  
-  # Step 1: Copy container files to staging area
-  log "Step 1/3: Copying container files to staging area..."
-  log "  Source: $RUNCVM_VM_MOUNTPOINT (excluding .runcvm)"
-  log "  Destination: $staging_dir"
-  log "  This may take 30-60 seconds for large images..."
-  
-  busybox rm -rf "$staging_dir"
-  busybox mkdir -p "$staging_dir"
-  
-  # Use tar to copy, excluding .runcvm directory
-  local copy_start=$(busybox date +%s)
-  
-  if ! (cd "$RUNCVM_VM_MOUNTPOINT" && busybox tar -cf - --exclude='.runcvm' . 2>/dev/null | busybox tar -xf - -C "$staging_dir" 2>/dev/null); then
-    error "Failed to copy container files to staging"
-  fi
-  
-  local copy_end=$(busybox date +%s)
-  local copy_time=$(( copy_end - copy_start ))
-  
-  local staged_size=$(busybox du -sm "$staging_dir" 2>/dev/null | busybox cut -f1)
-  log "  Staging complete: ${staged_size}MB copied in ${copy_time}s"
-  
-  # Step 1b: Create init script in staging area
-  # This init script will be /init in the rootfs and runs the container's entrypoint
-  log "  Creating init script..."
-  
-  # Read the original entrypoint from runcvm config
-  local entrypoint_file="/.runcvm/entrypoint"
-  local init_script="${staging_dir}/init"
-  
-  # Create a minimal init script
-  cat > "$init_script" << 'INITEOF'
 #!/bin/sh
 # Firecracker minimal init for RunCVM
 # This runs as PID 1 inside the Firecracker VM
@@ -430,13 +154,6 @@ if [ -d "$RUNCVM_GUEST/lib" ]; then
     HAVE_RUNCVM_TOOLS=1
   else
     log INFO "Dynamic linker not found at $RUNCVM_LD"
-    # Fallback: check if tools work anyway (e.g. static busybox)
-    if "$RUNCVM_GUEST/bin/busybox" true 2>/dev/null; then
-       log INFO "Busybox works without explicit LD check"
-       runcvm_ip() { "$RUNCVM_GUEST/bin/busybox" ip "$@"; }
-       runcvm_busybox() { "$RUNCVM_GUEST/bin/busybox" "$@"; }
-       HAVE_RUNCVM_TOOLS=1
-    fi
   fi
 else
   log INFO "RunCVM tools not found at $RUNCVM_GUEST"
@@ -444,42 +161,9 @@ fi
 
 # Bring up loopback
 if [ "$HAVE_RUNCVM_TOOLS" = "1" ]; then
-  runcvm_ip link set lo up 2>/dev/null  # Ensure loopback is up
+  runcvm_ip link set lo up 2>/dev/null || true
+else
   ip link set lo up 2>/dev/null || ifconfig lo up 2>/dev/null || true
-  
-  # Configure eth0 with static IP
-  # Cloud-init usually handles this, but for non-cloud-init images (or early boot connectivity)
-  # we set it up.
-  # CRITICAL: We also add a route to 169.254.1.1 (the bridge IP in the container namespace)
-  # This allows 'docker exec' (runcvm-ctr-exec) to receive return traffic from the VM.
-  # Otherwise, VM replies to default GW (172.17.0.1) which drops 169.254.x.x traffic.
-  
-  # Wait for interface
-  echo "Waiting for eth0..."
-  for i in $(seq 1 50); do
-    if ip link show eth0 >/dev/null 2>&1; then
-      break
-    fi
-    sleep 0.1
-  done
-  
-  # Set IP if variables passed
-  # The variables RUNCVM_IP etc are injected by runcvm-ctr-firecracker into init script
-  # We should ensure they are written to the init script.
-  # Currently runcvm-ctr-firecracker does NOT write specific IP vars to init script directly,
-  # it relies on cloud-init or network config files.
-  # BUT we can add the route using 'ip' command if 'ip' is available.
-  
-  if command -v ip >/dev/null 2>&1; then
-     ip link set eth0 up 2>/dev/null || true
-     ip link set eth0 up 2>/dev/null || true
-  fi
-  
-  # Flush any potential firewall rules that might block SSH
-  if command -v iptables >/dev/null 2>&1; then
-     iptables -F 2>/dev/null || true
-     iptables -P INPUT ACCEPT 2>/dev/null || true
-  fi
 fi
 
 # First, check what kernel modules are loaded for networking
@@ -704,12 +388,8 @@ if [ "$HAVE_RUNCVM_TOOLS" = "1" ]; then
 EPKAEOF
     chmod 400 "$DROPBEAR_DIR/epka.json" "$DROPBEAR_DIR/key"
     log INFO "SSH keys generated"
-    log INFO "DEBUG: Keys in $DROPBEAR_DIR:"
-    ls -la "$DROPBEAR_DIR" | while read line; do log INFO "  $line"; done
   else
     log INFO "Using pre-generated SSH keys"
-    log INFO "DEBUG: Pre-existing keys in $DROPBEAR_DIR:"
-    ls -la "$DROPBEAR_DIR" | while read line; do log INFO "  $line"; done
   fi
   
   # Start dropbear SSH server
@@ -905,7 +585,6 @@ if [ "$SHOULD_RUN_SYSTEMD" = "1" ] && [ -n "$SYSTEMD_BIN" ]; then
        # Execute systemd - this REPLACES the init process
        exec "$SYSTEMD_BIN" --unit=multi-user.target
    fi
-fi
 
 if [ -f /.runcvm-entrypoint ] && [ -s /.runcvm-entrypoint ]; then
   # Read entrypoint line by line into an array-like structure
@@ -1486,43 +1165,6 @@ DBUNITEOF
         
         # Set MTU and bring up
         ip link set dev "$tap_name" up mtu "${DOCKER_IF_MTU:-1500}"
-        
-        # Add IP alias to bridge to allow container-to-VM communication (e.g. docker exec)
-        # We pick 172.17.0.254 (or derived from network) to be on the same subnet as VM.
-        # This ensures ARP works correctly without needing special routes in VM.
-        # Note: If DOCKER_IF_IP_NETPREFIX=16, we use .254.
-        # We need to construct a valid IP.
-        # Hardcoding .254 might conflict if the subnet is small (/24).
-        # But Docker default is /16.
-        # Safer: Add address 169.254.1.1/32 to bridge here explicitly if not done elsewhere?
-        # NO, we want SAME SUBNET.
-        # Let's derive it. echo "172.17.255.254"
-        # For now, simplistic approach: Force 169.254.1.1 is already there. Add 10.0.0.1?
-        # If we use 169.254.1.1 on bridge and added route to VM, it SHOULD work.
-        # Why did it fail?
-        # Let's try adding the Docker Gateway IP (172.17.0.1) to the bridge? NO conflict.
-        # Let's add 172.17.x.254.
-        # Constructing IP logic is complex in shell.
-        # I will stick to my "Route Injection" strategy BUT make sure it works.
-        # Actually... if I simply add "ip addr add $DOCKER_IF_IP/32 ...".
-        # No, that conflicts.
-        #
-        # Re-thinking: The route injection failed.
-        # Let's try adding 169.254.1.2/32 to the VM side (in init script) as I planned before?
-        # No I added route.
-        # Let's try ADDING IP to Bridge: 172.17.255.254/16 (assuming /16).
-        # If prefix is /24, then 172.17.0.254/24.
-        
-        # Implementation:
-        net_prefix="${DOCKER_IF_IP_NETPREFIX:-16}"
-        base_ip=$(echo "$DOCKER_IF_IP" | cut -d. -f1-3)
-        alias_ip="${base_ip}.254"
-        log "    Adding connectivity alias 172.17.255.254/16 to $bridge_name"
-        if ip addr add 172.17.255.254/16 dev "$bridge_name"; then
-            log "    Alias added successfully"
-        else
-            log "    ERROR: Failed to add alias (Exit $?)"
-        fi
       
         # Debug: show bridge and tap status
         if [ "$RUNCVM_LOG_LEVEL" = "DEBUG" ]; then
@@ -1712,4 +1354,3 @@ CFGEOF
   return $exit_code
 }
 
-main "$@"

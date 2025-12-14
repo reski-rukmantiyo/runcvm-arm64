@@ -1,0 +1,41 @@
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y \
+    systemd \
+    systemd-sysv \
+    curl \
+    dbus \
+    kmod \
+    iproute2 \
+    iputils-ping \
+    net-tools \
+    cloud-init \
+    openssh-server \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /var/lib/apt/lists/partial
+
+# Configure cloud-init to avoid metadata service timeouts
+RUN echo "datasource_list: [ NoCloud, None ]" > /etc/cloud/cloud.cfg.d/99_pve.cfg && \
+    echo "disable_root: 0" >> /etc/cloud/cloud.cfg.d/99_pve.cfg && \
+    echo "ssh_pwauth: 1" >> /etc/cloud/cloud.cfg.d/99_pve.cfg
+
+# Inject cloud-init configuration (NoCloud datasource)
+# We place it in the seed directory so it's picked up without network requirement
+RUN mkdir -p /var/lib/cloud/seed/nocloud/
+COPY tests/05-dind/cloud-init.yaml /var/lib/cloud/seed/nocloud/user-data
+COPY tests/05-dind/network-config.yaml /var/lib/cloud/seed/nocloud/network-config
+RUN touch /var/lib/cloud/seed/nocloud/meta-data
+
+# Mask troublesome services
+RUN systemctl mask \
+    dev-mqueue.mount \
+    sys-kernel-debug.mount \
+    sys-kernel-tracing.mount \
+    systemd-networkd.service \
+    systemd-networkd-wait-online.service
+
+STOPSIGNAL SIGRTMIN+3
+
+CMD ["/sbin/init"]

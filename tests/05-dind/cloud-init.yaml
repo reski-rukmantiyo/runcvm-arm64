@@ -1,0 +1,23 @@
+#cloud-config
+hostname: runcvm-cloud-init-test
+hostname: runcvm-cloud-init-test
+manage_etc_hosts: true
+
+users:
+  - name: runcvm
+    groups: sudo
+    shell: /bin/bash
+    sudo: ['ALL=(ALL) NOPASSWD:ALL']
+    lock_passwd: false
+    # Password: runcvm (SHA-512)
+    passwd: $6$runcvm$HpuJaAfslQbimM/CKcxI8hLSifzukWaiXtwMquxVKbTbGclxbHMKMZef.ZQakyMwCrApeuquSaeC1tMbLLNIw/
+
+write_files:
+  - path: /root/cloud-init-test.txt
+    content: |
+      Cloud-init execution successful!
+      Timestamp: $(date)
+    permissions: '0644'
+
+runcmd:
+  - echo "Cloud-init runcmd executed" > /root/runcmd.log
