@@ -87,8 +87,8 @@ This roadmap focuses on **Docker runtime** integration with Firecracker, achievi
 |---------|------|-------------|--------|----------|-----|
 | **CPU limits** | ✅ | ✅ | Complete | - | ✅ Done |
 | **Memory limits** | ✅ | ✅ | Complete | - | ✅ Done |
-| **CPU pinning** | ✅ | ❌ | Missing | Low | Phase 4 |
-| **Memory balloon** | ✅ | 🟡 | Partial | Low | Phase 4 |
+| **CPU pinning** | ✅ | ✅ | Complete | - | ✅ Done |
+| **Memory balloon** | ✅ | ✅ | Complete | - | ✅ Done |
 
 ### Container Features
 
@@ -641,6 +641,11 @@ cd tests/
   - Concurrent access support
   - Full Docker volume compatibility
   - Production-ready for database workloads
+
+- ✅ **Resource Management Complete** (December 14, 2025)
+  - **Memory Ballooning**: Configurable size via `RUNCVM_BALLOON_SIZE_MIB`, enabled via `RUNCVM_ENABLE_BALLOON`
+  - **CPU Pinning**: Validated Docker native integration (`--cpuset-cpus`) maps correctly to Firecracker vThreads
+  - Verified memory reclamation with `free -m` tests
 
 ### Daily Standup Questions
 1. What did I complete yesterday?
