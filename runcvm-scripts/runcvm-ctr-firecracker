@@ -935,7 +935,16 @@ WATCHEOF
 
   # Copy kernel modules for 9P support from Alpine kernel
 
+  log "  Copying kernel modules..."
+  local fc_modules_dir="$RUNCVM_GUEST/kernels/firecracker/latest/modules"
+  if [ -d "$fc_modules_dir" ]; then
+    # Find the kernel version directory
+    local kernel_ver=$(busybox ls "$fc_modules_dir" 2>/dev/null | busybox head -1)
+    if [ -n "$kernel_ver" ] && [ -d "$fc_modules_dir/$kernel_ver" ]; then
+      log "    Found kernel modules for version: $kernel_ver"
       
+      # Create modules directory in staging
+      busybox mkdir -p "${staging_dir}/lib/modules/$kernel_ver"
       # Copy vsock modules if they exist
       if [ -d "$fc_modules_dir/$kernel_ver/kernel/net/vmw_vsock" ]; then
         busybox mkdir -p "${staging_dir}/lib/modules/$kernel_ver/kernel/net"
