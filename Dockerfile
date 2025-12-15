@@ -91,7 +91,7 @@ RUN apk update && \
     qemu-guest-agent \
     qemu-hw-display-virtio-gpu \
     aavmf \
-    jq iproute2 netcat-openbsd e2fsprogs blkid util-linux \
+    jq iproute2 netcat-openbsd e2fsprogs e2fsprogs-extra blkid util-linux \
     s6 dnsmasq iptables nftables \
     ncurses coreutils \
     procps \
@@ -113,7 +113,7 @@ COPY build-utils/make-bundelf-bundle.sh /usr/local/bin/make-bundelf-bundle.sh
 # Changed from qemu-system-x86_64 to qemu-system-aarch64
 # Note: sshfs removed from binaries - using Rust FUSE binaries instead
 # Note: watch from procps is included for proper Ctrl-C handling (busybox watch doesn't handle it)
-ENV BUNDELF_BINARIES="busybox bash jq ip nc mke2fs blkid findmnt dnsmasq xtables-legacy-multi nft xtables-nft-multi nft mount s6-applyuidgid qemu-system-aarch64 qemu-ga /usr/lib/qemu/virtiofsd tput coreutils getent dropbear dbclient dropbearkey watch /usr/bin/nsenter /usr/sbin/unfsd /sbin/rpcbind"
+ENV BUNDELF_BINARIES="busybox bash jq ip nc mke2fs resize2fs debugfs blkid findmnt dnsmasq xtables-legacy-multi nft xtables-nft-multi nft mount s6-applyuidgid qemu-system-aarch64 qemu-ga /usr/lib/qemu/virtiofsd tput coreutils getent dropbear dbclient dropbearkey watch /usr/bin/nsenter /usr/sbin/unfsd /sbin/rpcbind"
 ENV BUNDELF_EXTRA_LIBS="/usr/lib/xtables /usr/libexec/coreutils /tmp/dropbear/libepka_file.so /usr/lib/qemu/*.so /usr/lib/libtirpc*"
 ENV BUNDELF_EXTRA_SYSTEM_LIB_PATHS="/usr/lib/xtables"
 ENV BUNDELF_CODE_PATH="/opt/runcvm"
@@ -399,7 +399,7 @@ COPY --from=firecracker-kernel-build /build/linux/.config.bak /opt/runcvm/kernel
 # Note: unfs3 and rpcbind will be installed at runtime in the container
 # They are not bundled here as they need to run in container context
 
-RUN apk update && apk add --no-cache rsync unfs3
+RUN apk update && apk add --no-cache rsync unfs3 e2fsprogs-extra
 
 ARG RUNCVM_SCRIPTS_CACHEBUST
 RUN echo "Cache bust: $RUNCVM_SCRIPTS_CACHEBUST"

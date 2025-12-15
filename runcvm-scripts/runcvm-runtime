@@ -78,7 +78,7 @@ _log() {
   # Only log if severity meets threshold
   if [ "$severity_level" -ge "$CURRENT_LOG_LEVEL" ]; then
     local timestamp=$(date '+%Y-%m-%d %H:%M:%S.%6N')
-    echo "[$timestamp] [RunCVM-Runtime] [$$] [$severity] $message" >> /tmp/runcvm-$$.log
+    echo "[$timestamp] [RunCVM-Runtime] [$$] [$severity] $message" >> /opt/runcvm/runtime.log
     # Also output ERROR to stderr
     if [ "$severity" = "ERROR" ]; then
       echo "[$timestamp] [RunCVM-Runtime] [$severity] $message" >&2
@@ -334,7 +334,7 @@ if [ "$COMMAND" = "create" ]; then
   # Allow user to enable debug logging
   if [ "$(get_config_env RUNCVM_RUNTIME_DEBUG)" = "1" ]; then
     RUNCVM_LOG_LEVEL="DEBUG"
-    CURRENT_LOG_LEVEL="${LOG_LEVELS[DEBUG]}"
+    CURRENT_LOG_LEVEL=$(get_log_level_num "DEBUG")
   fi
 
   log_debug "Command line: $0 ${COMMAND_LINE[@]@Q}"
@@ -459,6 +459,79 @@ if [ "$COMMAND" = "create" ]; then
     [ "$RUNCVM_LOG_LEVEL" = "DEBUG" ] && echo "[DEBUG] FIRECRACKER: Creating NFS mounts..." >&2
     [ "$RUNCVM_LOG_LEVEL" = "DEBUG" ] && echo "[DEBUG] ROOT=$ROOT" >&2
     
+    # Firecracker Rootfs Caching
+    # Logic:
+    # 1. Generate a cache key based on the rootfs path (Docker overlay2 merged directory).
+    #    This path is unique to the specific set of image layers.
+    # 2. Mount the host cache directory (/var/lib/runcvm/cache) to the container (/.runcvm/cache).
+    # 3. Pass the key to the container env.
+
+    # 1. Generate Key
+    if [ -n "$ROOT" ] && [ -d "$ROOT" ]; then
+      CACHE_SOURCE_STRING="$ROOT"
+      
+      # Try to get stable key from overlay lowerdir (which represents the image)
+      # This is stable across different container instances of the same image
+      if command -v findmnt >/dev/null 2>&1; then
+         # Extract lowerdir from options
+         # findmnt might not be in path, check /usr/bin etc if needed, but command -v handles PATH
+         LOWERDIR=$(findmnt -n -o OPTIONS --target "$ROOT" 2>/dev/null | grep -o 'lowerdir=[^,]*')
+         if [ -n "$LOWERDIR" ]; then
+            # The first directory in lowerdir is the ephemeral container init layer (unique per container)
+            # We must strip it to get the stable image layers.
+            # LOWERDIR format: lowerdir=/path/init:/path/image1:/path/image2...
+            
+            # Remove 'lowerdir=' prefix if captured
+            CLEAN_LOWERDIR="${LOWERDIR#lowerdir=}"
+            
+            # Remove the first path component (everything up to first colon)
+            STABLE_LAYERS=$(echo "$CLEAN_LOWERDIR" | sed 's/^[^:]*://')
+            
+            if [ -n "$STABLE_LAYERS" ] && [ "$STABLE_LAYERS" != "$CLEAN_LOWERDIR" ]; then
+               CACHE_SOURCE_STRING="$STABLE_LAYERS"
+               [ "$RUNCVM_LOG_LEVEL" = "DEBUG" ] && echo "[DEBUG] Stripped ephemeral layer. Using stable layers: $STABLE_LAYERS" >&2
+            else
+               # Fallback if only one layer or parsing failed (unlikely for Docker)
+               CACHE_SOURCE_STRING="$CLEAN_LOWERDIR"
+               [ "$RUNCVM_LOG_LEVEL" = "DEBUG" ] && echo "[DEBUG] Could not strip layer (single layer?), using full: $CLEAN_LOWERDIR" >&2
+            fi
+         fi
+      else 
+         # Fallback to parsing mount output (busybox mount compatible)
+         # Format varies but usually contains "lowerdir=..." in options
+         # Look for mount point at end of line or before " type "
+         MOUNT_INFO=$(mount | grep " $ROOT " | grep "overlay")
+         LOWERDIR=$(echo "$MOUNT_INFO" | grep -o 'lowerdir=[^,]*' | head -1)
+         if [ -n "$LOWERDIR" ]; then
+            CACHE_SOURCE_STRING="$LOWERDIR"
+            [ "$RUNCVM_LOG_LEVEL" = "DEBUG" ] && echo "[DEBUG] Using lowerdir (from mount) for cache key" >&2
+         fi
+      fi
+
+      # Use sha256sum if available (coreutils), else standard likely available tools
+      RUNCVM_CACHE_KEY=$(echo -n "$CACHE_SOURCE_STRING" | sha256sum 2>/dev/null | awk '{print $1}')
+      if [ -z "$RUNCVM_CACHE_KEY" ]; then
+         # Fallback if sha256sum missing
+         RUNCVM_CACHE_KEY=$(echo -n "$CACHE_SOURCE_STRING" | md5sum 2>/dev/null | awk '{print $1}')
+      fi
+      
+      log "FIRECRACKER: Rootfs Cache Key: $RUNCVM_CACHE_KEY (derived from $ROOT)"
+      [ "$RUNCVM_LOG_LEVEL" = "DEBUG" ] && echo "[DEBUG] FIRECRACKER: Cache Key: $RUNCVM_CACHE_KEY" >&2
+      
+      set_config_env "RUNCVM_CACHE_KEY" "$RUNCVM_CACHE_KEY"
+    fi
+
+    # 2. Mount Cache Directory
+    HOST_CACHE_DIR="/var/lib/runcvm/cache"
+    CTR_CACHE_DIR="/.runcvm/cache"
+    
+    # Ensure host cache dir exists (might fail if read-only host FS, but usually /var/lib is writable in Colima/VMs)
+    mkdir -p "$HOST_CACHE_DIR" 2>/dev/null || true
+
+    # Mount it
+    jq_set "$CFG" --arg host "$HOST_CACHE_DIR" --arg ctr "$CTR_CACHE_DIR" \
+      '.mounts += [{"destination":$ctr,"type":"bind","source":$host,"options":["bind","private","rw"]}]'
+
     # Pick random port in range 1000-1050
     NFS_PORT=$((1000 + RANDOM % 51))
     
