@@ -105,7 +105,7 @@ This roadmap focuses on **Docker runtime** integration with Firecracker, achievi
 
 | Feature | QEMU | Firecracker | Status | Priority | ETA |
 |---------|------|-------------|--------|----------|-----|
-| **Docker-in-Docker** | ✅ | 🟡 | Untested | Medium | Week 8-9 |
+| **Docker-in-Docker** | ✅ | ✅ | Complete | - | ✅ Done |
 | **systemd containers** | ✅ | ✅ | Complete | - | ✅ Done |
 | **Multi-stage builds** | ✅ | ✅ | Complete | - | ✅ Done |
 
@@ -352,17 +352,18 @@ docker run -d --runtime=runcvm -e RUNCVM_HYPERVISOR=firecracker \
 **Objective**: Validate complex Docker workloads
 
 **Tasks**:
-- [ ] **Week 8**: Docker-in-Docker
-  - [ ] Test Docker daemon in Firecracker VM
-  - [ ] Nested container support
-  - [ ] Performance validation
+- [x] **Week 8**: Docker-in-Docker
+  - [x] Test Docker daemon in Firecracker VM
+  - [x] Nested container support
+  - [x] Performance validation
   
   ```bash
+  # ✅ VERIFIED
   docker run --runtime=runcvm \
     -e RUNCVM_HYPERVISOR=firecracker \
-    -e RUNCVM_MEM_SIZE=4096M \
-    --privileged \
-    docker:dind
+    -e RUNCVM_SYSTEMD=true \
+    -e RUNCVM_KERNEL_ARGS="systemd.unified_cgroup_hierarchy=0" \
+    runcvm-dind-systemd
   ```
 
 - [ ] **Week 9**: systemd containers
@@ -550,7 +551,7 @@ docker run --runtime=runcvm \
 | Dec 6, 2025 | First Firecracker boot | ✅ |
 | **Dec 7, 2025** | **Phase 3 Started** | ✅ |
 | **Dec 13, 2025** | **Storage & Persistence Complete** | ✅ **ACHIEVED** |
-| **Dec 15, 2025** | **Systemd & Dynamic Networking** | ✅ **ACHIEVED** |
+| **Dec 15, 2025** | **Systemd & DinD Support** | ✅ **ACHIEVED** |
 | Jan 18, 2026 | Rootfs caching complete | 🔄 In Progress |
 | Feb 22, 2026 | Performance optimization done | 📅 |
 | Mar 1, 2026 | Docker feature parity achieved | 📅 |
@@ -652,6 +653,11 @@ cd tests/
   - **Dynamic Networking**: Implemented `ipcalc`-based dynamic IP aliasing and "IP Flush" strategy to fix local routing loops.
   - **Boot Optimization**: Optimized kernel args (`loglevel=0`) for silent, faster boot.
   - **SSH**: Verified standard SSH (`-p 2222:22`) as robust alternative to `docker exec`.
+
+- ✅ **Docker-in-Docker (DinD) Support** (December 15, 2025)
+  - Full nested container support using `cgroupfs` driver
+  - Configurable kernel arguments via `RUNCVM_KERNEL_ARGS`
+  - Validated with SystemD outer container
 
 ### Daily Standup Questions
 1. What did I complete yesterday?
