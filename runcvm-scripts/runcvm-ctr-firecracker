@@ -1517,6 +1517,20 @@ DBUNITEOF
         net_prefix="${DOCKER_IF_IP_NETPREFIX:-16}"
         base_ip=$(echo "$DOCKER_IF_IP" | cut -d. -f1-3)
         alias_ip="${base_ip}.254"
+
+        # CLEANUP: Remove interfering SNAT rules and IPs that break routing
+        log "    Cleaning up default SNAT rules and Link-Local IP..."
+        # Remove bad SNAT for SSH port 22222
+        if [ -n "$RUNCVM_GUEST" ] && [ -d "$RUNCVM_GUEST/usr/lib/xtables" ]; then
+            XTABLES_LIBDIR=$RUNCVM_GUEST/usr/lib/xtables xtables-nft-multi iptables \
+              -t nat -D POSTROUTING -p tcp -m tcp --dport 22222 -j SNAT --to-source 169.254.169.254 2>/dev/null || true
+        else
+            iptables -t nat -D POSTROUTING -p tcp -m tcp --dport 22222 -j SNAT --to-source 169.254.169.254 2>/dev/null || true
+        fi
+        
+        # Remove Link-Local IP from bridge to force usage of our Alias
+        ip addr del 169.254.1.1/32 dev "$bridge_name" 2>/dev/null || true
+        
         log "    Adding connectivity alias 172.17.255.254/16 to $bridge_name"
         if ip addr add 172.17.255.254/16 dev "$bridge_name"; then
             log "    Alias added successfully"
