@@ -456,7 +456,7 @@ if [ "$HAVE_RUNCVM_TOOLS" = "1" ]; then
   # Otherwise, VM replies to default GW (172.17.0.1) which drops 169.254.x.x traffic.
   
   # Wait for interface
-  echo "Waiting for eth0..."
+  log DEBUG "Waiting for eth0..."
   for i in $(seq 1 50); do
     if ip link show eth0 >/dev/null 2>&1; then
       break
@@ -838,14 +838,16 @@ fi
 # 1. RUNCVM_SYSTEMD=1 env var
 # 2. image has systemd installed (and we decide to auto-enable? No, safer to require flag for now or just check if entrypoint is empty/default)
 
-echo "RunCVM-FC init: Checking for Systemd..."
-echo "RunCVM-FC init:   Detailed check:"
-ls -la /usr/lib/systemd/systemd 2>/dev/null || echo "  /usr/lib/systemd/systemd not found"
-ls -la /lib/systemd/systemd 2>/dev/null || echo "  /lib/systemd/systemd not found"
-ls -la /sbin/init 2>/dev/null || echo "  /sbin/init not found"
-echo "  PATH=$PATH"
-echo "RunCVM-FC init:   SYSTEMD_BIN='$SYSTEMD_BIN'"
-echo "RunCVM-FC init:   RUNCVM_SYSTEMD='$RUNCVM_SYSTEMD'"
+if is_debug; then
+  log DEBUG "RunCVM-FC init: Checking for Systemd..."
+  log DEBUG "RunCVM-FC init:   Detailed check:"
+  ls -la /usr/lib/systemd/systemd 2>/dev/null || log DEBUG "  /usr/lib/systemd/systemd not found"
+  ls -la /lib/systemd/systemd 2>/dev/null || log DEBUG "  /lib/systemd/systemd not found"
+  ls -la /sbin/init 2>/dev/null || log DEBUG "  /sbin/init not found"
+  log DEBUG "  PATH=$PATH"
+  log DEBUG "RunCVM-FC init:   SYSTEMD_BIN='$SYSTEMD_BIN'"
+  log DEBUG "RunCVM-FC init:   RUNCVM_SYSTEMD='$RUNCVM_SYSTEMD'"
+fi
 
 SHOULD_RUN_SYSTEMD=0
 if [ "$RUNCVM_SYSTEMD" = "1" ] || [ "$RUNCVM_SYSTEMD" = "true" ]; then
@@ -855,7 +857,10 @@ elif [ -n "$SYSTEMD_BIN" ] && [ ! -f /.runcvm-entrypoint ]; then
   # Let's stick to explicit flag for now to avoid breaking existing generic containers
   :
 fi
-echo "RunCVM-FC init:   SHOULD_RUN_SYSTEMD='$SHOULD_RUN_SYSTEMD'"
+
+if is_debug; then
+  log DEBUG "RunCVM-FC init:   SHOULD_RUN_SYSTEMD='$SHOULD_RUN_SYSTEMD'"
+fi
 
 if [ "$SHOULD_RUN_SYSTEMD" = "1" ] && [ -n "$SYSTEMD_BIN" ]; then
    echo "RunCVM-FC init: Booting with Systemd ($SYSTEMD_BIN)..."
@@ -900,7 +905,15 @@ if [ "$SHOULD_RUN_SYSTEMD" = "1" ] && [ -n "$SYSTEMD_BIN" ]; then
        
        RET=$?
        echo "RunCVM-FC init: Systemd exited with code $RET"
-       busybox poweroff -f
+       if [ "$HAVE_RUNCVM_TOOLS" = "1" ]; then
+           runcvm_busybox poweroff -f
+       elif command -v busybox >/dev/null 2>&1; then
+           busybox poweroff -f
+       elif command -v poweroff >/dev/null 2>&1; then
+           poweroff -f
+       else
+           halt -f
+       fi
    else
        echo "RunCVM-FC init: 'unshare' not found, falling back to exec (PID 1)"
        # Execute systemd - this REPLACES the init process
@@ -939,7 +952,15 @@ fi
 # OR if run_with_tty was not an exec (which it is currently)
 RET=$?
 echo "RunCVM-FC init: Entrypoint exited with code $RET"
-busybox poweroff -f
+if [ "$HAVE_RUNCVM_TOOLS" = "1" ]; then
+  runcvm_busybox poweroff -f
+elif command -v busybox >/dev/null 2>&1; then
+  busybox poweroff -f
+elif command -v poweroff >/dev/null 2>&1; then
+  poweroff -f
+else
+  halt -f
+fi
 INITEOF
   busybox chmod +x "$init_script"
   
