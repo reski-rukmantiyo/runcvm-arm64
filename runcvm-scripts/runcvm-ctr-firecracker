@@ -7,6 +7,7 @@
 # This avoids the self-copy problem where mke2fs would copy the rootfs into itself
 
 set -o errexit -o pipefail
+set -x
 
 # Load original environment
 . /.runcvm/config
@@ -1515,8 +1516,28 @@ DBUNITEOF
         
         # Implementation:
         net_prefix="${DOCKER_IF_IP_NETPREFIX:-16}"
-        base_ip=$(echo "$DOCKER_IF_IP" | cut -d. -f1-3)
-        alias_ip="${base_ip}.254"
+        
+        # Calculate dynamic alias IP to avoid hardcoding 172.17.255.254
+        # We try to use the last IP in the subnet (Broadcast - 1) or similar.
+        # Since we have minimal tools (busybox), we can use python enabled in image or ipcalc
+        # 'ipcalc' in busybox: ipcalc -b 172.17.0.2/16 -> BROADCAST=172.17.255.255
+        
+        if command -v ipcalc >/dev/null 2>&1; then
+           # Use Busybox ipcalc (wrap in || true to prevent set -e crash)
+           local bcast=$(ipcalc -b "$DOCKER_IF_IP/$net_prefix" 2>/dev/null | cut -d= -f2 || true)
+           if [ -n "$bcast" ]; then
+              # Subtract 1 from broadcast using awk (sed might be missing)
+              # If last octet is 255, make it 254. Otherwise subtract 1.
+              # Trim potential whitespace from bcast
+              alias_ip=$(echo "$bcast" | tr -d ' ' | awk -F. 'BEGIN{OFS="."} {if ($4==255) $4=254; else $4=$4-1; print}')
+           else
+              base_ip=$(echo "$DOCKER_IF_IP" | cut -d. -f1-3)
+              alias_ip="${base_ip}.254"
+           fi
+        else
+            base_ip=$(echo "$DOCKER_IF_IP" | cut -d. -f1-3)
+            alias_ip="${base_ip}.254"
+        fi
 
         # CLEANUP: Remove interfering SNAT rules and IPs that break routing
         log "    Cleaning up default SNAT rules and Link-Local IP..."
@@ -1531,9 +1552,21 @@ DBUNITEOF
         # Remove Link-Local IP from bridge to force usage of our Alias
         ip addr del 169.254.1.1/32 dev "$bridge_name" 2>/dev/null || true
         
-        log "    Adding connectivity alias 172.17.255.254/16 to $bridge_name"
-        if ip addr add 172.17.255.254/16 dev "$bridge_name"; then
+        log "    Adding connectivity alias $alias_ip to $bridge_name"
+        if ip addr add "$alias_ip/$net_prefix" dev "$bridge_name"; then
             log "    Alias added successfully"
+            
+            # CRITICAL FIX: Flush the original Container IP from the bridge AND the interface.
+            # If we keep it, the kernel treats traffic to VM (which has the same IP) 
+            # as Local delivery, causing "Connection Refused" (or Host Unreachable loop).
+            # By removing it, we force the kernel to route via the bridge (using the Alias for subnet).
+            log "    Flushing conflicting container IP $DOCKER_IF_IP from $bridge_name and $DOCKER_IF..."
+            if [ "$RUNCVM_LOG_LEVEL" = "DEBUG" ]; then ip addr show; fi
+            ip addr del "$DOCKER_IF_IP/$net_prefix" dev "$bridge_name" 2>/dev/null || true
+            ip addr del "$DOCKER_IF_IP/32" dev "$bridge_name" 2>/dev/null || true
+            # Also flush from the slave interface (Docker might put it there)
+            ip addr del "$DOCKER_IF_IP/$net_prefix" dev "$DOCKER_IF" 2>/dev/null || true
+            ip addr del "$DOCKER_IF_IP/32" dev "$DOCKER_IF" 2>/dev/null || true
         else
             log "    ERROR: Failed to add alias (Exit $?)"
         fi
