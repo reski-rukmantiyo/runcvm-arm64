@@ -401,6 +401,8 @@ COPY --from=firecracker-kernel-build /build/linux/.config.bak /opt/runcvm/kernel
 
 RUN apk update && apk add --no-cache rsync unfs3
 
+ARG RUNCVM_SCRIPTS_CACHEBUST
+RUN echo "Cache bust: $RUNCVM_SCRIPTS_CACHEBUST"
 ADD runcvm-scripts /opt/runcvm/scripts/
 
 ADD build-utils/entrypoint-install.sh /
