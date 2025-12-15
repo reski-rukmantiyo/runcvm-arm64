@@ -106,7 +106,7 @@ This roadmap focuses on **Docker runtime** integration with Firecracker, achievi
 | Feature | QEMU | Firecracker | Status | Priority | ETA |
 |---------|------|-------------|--------|----------|-----|
 | **Docker-in-Docker** | ✅ | 🟡 | Untested | Medium | Week 8-9 |
-| **systemd containers** | ✅ | 🟡 | Untested | Medium | Week 8-9 |
+| **systemd containers** | ✅ | ✅ | Complete | - | ✅ Done |
 | **Multi-stage builds** | ✅ | ✅ | Complete | - | ✅ Done |
 
 ---
@@ -550,6 +550,7 @@ docker run --runtime=runcvm \
 | Dec 6, 2025 | First Firecracker boot | ✅ |
 | **Dec 7, 2025** | **Phase 3 Started** | ✅ |
 | **Dec 13, 2025** | **Storage & Persistence Complete** | ✅ **ACHIEVED** |
+| **Dec 15, 2025** | **Systemd & Dynamic Networking** | ✅ **ACHIEVED** |
 | Jan 18, 2026 | Rootfs caching complete | 🔄 In Progress |
 | Feb 22, 2026 | Performance optimization done | 📅 |
 | Mar 1, 2026 | Docker feature parity achieved | 📅 |
@@ -642,10 +643,15 @@ cd tests/
   - Full Docker volume compatibility
   - Production-ready for database workloads
 
-- ✅ **Resource Management Complete** (December 14, 2025)
   - **Memory Ballooning**: Configurable size via `RUNCVM_BALLOON_SIZE_MIB`, enabled via `RUNCVM_ENABLE_BALLOON`
   - **CPU Pinning**: Validated Docker native integration (`--cpuset-cpus`) maps correctly to Firecracker vThreads
   - Verified memory reclamation with `free -m` tests
+
+- ✅ **Systemd & Interactive Access Complete** (December 15, 2025)
+  - **Systemd Support**: Implemented PID namespace isolation (`unshare -p`) allowing systemd to run as PID 1 alongside container entrypoint.
+  - **Dynamic Networking**: Implemented `ipcalc`-based dynamic IP aliasing and "IP Flush" strategy to fix local routing loops.
+  - **Boot Optimization**: Optimized kernel args (`loglevel=0`) for silent, faster boot.
+  - **SSH**: Verified standard SSH (`-p 2222:22`) as robust alternative to `docker exec`.
 
 ### Daily Standup Questions
 1. What did I complete yesterday?

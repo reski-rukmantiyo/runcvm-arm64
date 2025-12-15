@@ -56,11 +56,40 @@ docker run --rm --privileged --runtime=runcvm \
   -e RUNCVM_NETWORK_MODE=host \
   --net=host \
   alpine ip a
+  --net=host \
+  alpine ip a
 ```
 
-### Limitations
-- The VM does **not** see the host's full list of interfaces (it sees `eth0` as the TAP).
-- Inbound ports are not automatically opened on the host (unlike true `--net=host`). Use standard `-p` port mapping if you need inbound access, although outbound is "open".
+---
+
+## Dynamic IP Allocation (Internal)
+
+To ensure robust internal routing between the container namespace and the microVM, RunCVM implements a **Dynamic IP Alias** system.
+
+*   **Problem**: Standard Docker containers and Firecracker VMs coexist in separate network scopes but share the same IP. This confuses the kernel, leading to routing loops for local traffic (e.g., `docker exec`).
+*   **Solution**: RunCVM automatically calculates a **Network Alias IP** (derived from the subnet broadcast address, e.g., `172.17.255.254` for a `/16` network) and assigns it to the internal bridge `br-eth0`. It also removes the conflicting container IP from the bridge, forcing L2 routing to the VM.
+*   **Benefit**: This is fully transparent to the user but enables reliable connectivity for `docker exec` and direct VM access.
+
+---
+
+## Best Practices: Interactive Access
+
+While `docker exec -it <container> /bin/sh` is supported (via a Dropbear SSH sidecar), it involves complex routing layers. For the most robust interactive experience (especially for development), we recommend using **Standard SSH**.
+
+### Recommended Pattern
+Map the Firecracker VM's SSH port (22) to a host port:
+
+```bash
+docker run -d -p 2222:22 --runtime=runcvm ... my-image
+ssh -p 2222 root@localhost
+```
+
+This gives you a full, standard OpenSSH session directly to the VM, bypassing the limitations of `docker exec`.
+
+> [!WARNING]
+> **Systemd Required**: Standard SSH (Port 22) availability depends on the container running an SSH server daemon (like `openssh-server`). To ensure services start correctly, you must run the container with systemd enabled:
+> `-e RUNCVM_SYSTEMD=true`
+
 
 ---
 
