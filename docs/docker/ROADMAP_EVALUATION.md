@@ -20,15 +20,15 @@
         *   Guest agent/script to configure the new interface (IP, routes) dynamically inside the VM.
 
 ### 2. Docker-in-Docker (DinD)
-*   **Status**: 🟡 Partial / Untested
+*   **Status**: ✅ Complete (Rank 5 Solved!)
 *   **Difficulty**: 5/5
 *   **Analysis**:
-    *   **Challenge**: Running Docker inside Firecracker requires nested virtualization-like characteristics (bridge capability, cgroups management, overlayfs inside overlayfs).
-    *   **Gap**: Privileged mode is passed, but `dockerd` inside the VM needs valid cgroup mounts (v1 vs v2 hybrid issues), `mount` propagation, and likely a larger memory footprint than currently allocated.
-    *   **Requirements**:
-        *   Extensive kernel config validation (checking if Firecracker kernel supports all Docker check-config requirements).
-        *   Cgroup hierarchy passthrough or emulation.
-        *   Graph driver compatibility (vfs vs overlay2 inside the VM).
+    *   **Challenge**: Running Docker inside Firecracker required solving fundamental kernel incompatibilities (cgroup v2, BPF).
+    *   **Solution**: 
+        1.  Forcing Cgroup v1 hierarchy via kernel args (`systemd.unified_cgroup_hierarchy=0`).
+        2.  Configuring inner Docker daemon to use `cgroupfs` driver instead of `systemd` (bypassing BPF requirement).
+        3.  Using `iptables-legacy` to avoid nftables issues.
+    *   **Result**: Validated with `verify-dind-systemd.sh`. Inner Alpine containers run successfully!
 
 ---
 

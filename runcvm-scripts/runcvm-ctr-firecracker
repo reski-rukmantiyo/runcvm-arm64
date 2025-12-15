@@ -1413,6 +1413,9 @@ DBUNITEOF
   # Build boot arguments - use /init which we created in the rootfs
   # Note: 9p.debug=0xff enables verbose 9P logging to debug transport issues
   local boot_args="init=/init console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw"
+  if [ -n "$RUNCVM_KERNEL_ARGS" ]; then
+      boot_args="$boot_args $RUNCVM_KERNEL_ARGS"
+  fi
   # Add 'quiet' to suppress kernel boot messages when not in DEBUG mode
   if [ "$RUNCVM_LOG_LEVEL" != "DEBUG" ]; then
     boot_args="$boot_args quiet loglevel=0 systemd.show_status=false"
