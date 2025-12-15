@@ -23,15 +23,13 @@ CONTAINER_ID=$(docker run -d --runtime=runcvm --privileged \
   runcvm-systemd)
 
 echo "Container started: $CONTAINER_ID"
-echo "Waiting for container (max 60s)..."
-
-# Loop to wait for dropbear to start (systemd multi-user target)
-for i in {1..12}; do
+echo "Waiting for SSH to be up (max 180s)..."
+# Retry loop for SSH connectivity
+for i in $(seq 1 90); do
   if docker exec "$CONTAINER_ID" true 2>/dev/null; then
     echo "Container ready (SSH reachable)."
     break
   fi
-  echo "Waiting for SSH... ($i/12)"
   sleep 5
 done
 
