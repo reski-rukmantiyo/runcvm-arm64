@@ -1,0 +1,64 @@
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y \
+    systemd \
+    systemd-sysv \
+    curl \
+    dbus \
+    kmod \
+    iproute2 \
+    iputils-ping \
+    net-tools \
+    cloud-init \
+    openssh-server \
+    docker.io \
+    iptables \
+    ca-certificates \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /var/lib/apt/lists/partial \
+    && update-alternatives --set iptables /usr/sbin/iptables-legacy \
+    && update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy
+
+# Configure cloud-init to avoid metadata service timeouts
+RUN echo "datasource_list: [ NoCloud, None ]" > /etc/cloud/cloud.cfg.d/99_pve.cfg && \
+    echo "disable_root: 0" >> /etc/cloud/cloud.cfg.d/99_pve.cfg && \
+    echo "ssh_pwauth: 1" >> /etc/cloud/cloud.cfg.d/99_pve.cfg
+
+# Configure Docker to use cgroupfs driver (workaround for missing BPF support in Firecracker kernel)
+RUN mkdir -p /etc/docker && \
+    echo '{ \
+    "exec-opts": ["native.cgroupdriver=cgroupfs"], \
+    "cgroup-parent": "", \
+    "default-runtime": "custom-runc", \
+    "runtimes": { \
+    "custom-runc": { \
+    "path": "runc", \
+    "runtimeArgs": ["--systemd-cgroup=false"] \
+    } \
+    } \
+    }' > /etc/docker/daemon.json
+
+# Inject cloud-init configuration (NoCloud datasource)
+RUN mkdir -p /var/lib/cloud/seed/nocloud/
+COPY tests/05-dind/cloud-init.yaml /var/lib/cloud/seed/nocloud/user-data
+COPY tests/05-dind/network-config.yaml /var/lib/cloud/seed/nocloud/network-config
+RUN touch /var/lib/cloud/seed/nocloud/meta-data
+
+# Mask troublesome services, but ensure docker is enabled
+RUN systemctl mask \
+    dev-mqueue.mount \
+    sys-kernel-debug.mount \
+    sys-kernel-tracing.mount \
+    systemd-networkd.service \
+    systemd-networkd-wait-online.service \
+    && systemctl enable docker
+
+# Docker in Docker needs to access the docker socket or run its own daemon.
+# Since this is a "VM", we want to run the daemon.
+# SystemD should handle it via 'systemctl enable docker'.
+
+STOPSIGNAL SIGRTMIN+3
+
+CMD ["/sbin/init"]
