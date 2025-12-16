@@ -220,6 +220,33 @@ main() {
   fi
   
   # ==========================================================================
+  # SSH KEY GENERATION (BEFORE ROOTFS STAGING)
+  # ==========================================================================
+  # Generate dropbear keys BEFORE rootfs creation so KEY_PUBLIC can be injected
+  # into authorized_keys during staging. This is critical for docker exec.
+  
+  DROPBEAR_DIR="/.runcvm/dropbear"
+  busybox mkdir -p "$DROPBEAR_DIR"
+  
+  # Use explicit path for dynamic linker (RUNCVM_LD may not be set yet)
+  local RUNCVM_LD_PATH="$RUNCVM_GUEST/lib/ld"
+  
+  if [ ! -f "$DROPBEAR_DIR/key" ]; then
+    log "Generating SSH keys for docker exec..."
+    "$RUNCVM_LD_PATH" "$RUNCVM_GUEST/usr/bin/dropbearkey" -t ed25519 -f "$DROPBEAR_DIR/key" >/dev/null 2>&1
+  fi
+  
+  # Extract public key (MUST happen before rootfs staging)
+  KEY_PUBLIC=$("$RUNCVM_LD_PATH" "$RUNCVM_GUEST/usr/bin/dropbearkey" -y -f "$DROPBEAR_DIR/key" 2>/dev/null | grep ^ssh)
+  
+  if [ -n "$KEY_PUBLIC" ]; then
+    log "SSH public key extracted successfully"
+    log_debug "KEY_PUBLIC=$KEY_PUBLIC"
+  else
+    log_error "Failed to extract SSH public key - docker exec will not work"
+  fi
+  
+  # ==========================================================================
   # CACHE MAINTENANCE (LRU Eviction)
   # ==========================================================================
   # Clean up old cache files to prevent disk fill-up
@@ -280,6 +307,57 @@ main() {
        if ! debugfs -w -R "write $entrypoint_file /.runcvm-entrypoint" "$rootfs_path" >/dev/null 2>&1; then
           log "  [WARNING] Failed to update entrypoint in rootfs"
        fi
+    fi
+    
+    # INJECT FRESH PRIVATE KEY (CRITICAL so init script derives correct pubkey)
+    # The cached rootfs has a stale private key. If we don't update it, the init script
+    # will generate a stale public key and overwrite our authorized_keys work.
+    if command -v debugfs >/dev/null 2>&1 && [ -f "$DROPBEAR_DIR/key" ]; then
+       # Directory structure should exist in cache, but ensure it does
+       debugfs -w -R "mkdir /.runcvm" "$rootfs_path" >/dev/null 2>&1 || true
+       debugfs -w -R "mkdir /.runcvm/dropbear" "$rootfs_path" >/dev/null 2>&1 || true
+       
+       debugfs -w -R "rm /.runcvm/dropbear/key" "$rootfs_path" >/dev/null 2>&1 || true
+       if ! debugfs -w -R "write $DROPBEAR_DIR/key /.runcvm/dropbear/key" "$rootfs_path" >/dev/null 2>&1; then
+          log "  [WARNING] Failed to inject dropbear private key into cached rootfs"
+       else
+          log "  Injected fresh dropbear private key into cached rootfs"
+       fi
+    fi
+    
+    # INJECT CURRENT HOSTNAME
+    # Cached rootfs has stale /etc/hostname. Update it.
+    if command -v debugfs >/dev/null 2>&1 && [ -f /etc/hostname ]; then
+       local hostname_tmp="/tmp/hostname.$$"
+       busybox cp /etc/hostname "$hostname_tmp"
+       debugfs -w -R "rm /etc/hostname" "$rootfs_path" >/dev/null 2>&1 || true
+       if ! debugfs -w -R "write $hostname_tmp /etc/hostname" "$rootfs_path" >/dev/null 2>&1; then
+          log "  [WARNING] Failed to inject hostname into cached rootfs"
+       else
+          log "  Injected fresh hostname into cached rootfs"
+       fi
+       busybox rm -f "$hostname_tmp"
+    fi
+    
+    # INJECT CURRENT AUTHORIZED_KEYS (CRITICAL for docker exec)
+    # The cached rootfs has stale authorized_keys. We must inject the fresh public key.
+    if command -v debugfs >/dev/null 2>&1 && [ -n "$KEY_PUBLIC" ]; then
+       # Create temp file with current public key
+       local auth_keys_tmp="/tmp/authorized_keys.$$"
+       echo "$KEY_PUBLIC" > "$auth_keys_tmp"
+       
+       # Ensure /root/.ssh directory exists in rootfs
+       debugfs -w -R "mkdir /root/.ssh" "$rootfs_path" >/dev/null 2>&1 || true
+       
+       # Remove old authorized_keys and inject new one
+       debugfs -w -R "rm /root/.ssh/authorized_keys" "$rootfs_path" >/dev/null 2>&1 || true
+       if ! debugfs -w -R "write $auth_keys_tmp /root/.ssh/authorized_keys" "$rootfs_path" >/dev/null 2>&1; then
+          log "  [WARNING] Failed to inject authorized_keys into cached rootfs"
+       else
+          log "  Injected fresh authorized_keys into cached rootfs"
+       fi
+       
+       busybox rm -f "$auth_keys_tmp"
     fi
     
     # Expand to full size
@@ -707,6 +785,39 @@ fi
 
 log INFO "========== NETWORK SETUP END =========="
 
+# ========== DROPBEAR SSH (VM SIDE) ==========
+# Start dropbear inside the VM for docker exec support
+log INFO "Starting Dropbear SSH server..."
+
+# Ensure /root/.ssh exists (should be created by staging)
+mkdir -p /root/.ssh
+chmod 700 /root/.ssh
+
+# Start dropbear using RunCVM tools
+# We use the bundled dynamic linker and binary
+if [ -x "/.runcvm/guest/usr/sbin/dropbear" ] && [ -x "/.runcvm/guest/lib/ld" ]; then
+  # -R: Create hostkeys if missing
+  # -E: Log to stderr
+  # -s: Disable password auth (key only)
+  # -g: Disable password for root
+  # -p: Port 22222
+  # CRITICAL: Set HOME=/root so Dropbear finds /root/.ssh/authorized_keys
+  export HOME=/root
+  
+  # DEBUG: Check keys and permissions
+  log INFO "DEBUG: Checking /root permissions:"
+  ls -ld /root /root/.ssh /root/.ssh/authorized_keys 2>&1 | while read line; do log INFO "$line"; done
+  log INFO "DEBUG: authorized_keys content:"
+  cat /root/.ssh/authorized_keys 2>&1 | while read line; do log INFO "$line"; done
+
+  # Start Dropbear (removed -v flag - unsupported by this version)
+  /.runcvm/guest/lib/ld /.runcvm/guest/usr/sbin/dropbear -R -E -s -g -p 22222 2>&1 &
+  log INFO "  Dropbear started on port 22222"
+else
+  log ERROR "  Dropbear binary or linker not found at /.runcvm/guest/usr/sbin/dropbear"
+fi
+
+
 
 
 # Setup DNS
@@ -828,41 +939,11 @@ if [ "$HAVE_RUNCVM_TOOLS" = "1" ]; then
   fi
   
   # Start dropbear SSH server
-  # Only start manually if NOT running Systemd (Systemd service handles it otherwise)
-  if [ "$RUNCVM_SYSTEMD" != "1" ] && [ "$RUNCVM_SYSTEMD" != "true" ]; then
-    log INFO "Starting dropbear on port $SSHD_PORT..."
-    
-    # Ensure HOME is set for authorized_keys lookup
-    export HOME=/root
-   
-    # Prepare Dropbear flags
-    # -R: Create hostkeys if missing
-    # -E: Log to stderr
-    # -F: Foreground
-    # -s: Disable password auth (force key) -- CRITICAL for security and ensuring key works
-    # -g: Disable password for root
-    DB_FLAGS="-REF -s -g -p $SSHD_PORT"
-    
-    # If debug mode, log to stderr
-    # Otherwise, silence output to /dev/null
-    DB_OUTPUT="/dev/null"
-    if [ "$RUNCVM_LOG_LEVEL" = "DEBUG" ]; then
-        # Dropbear doesn't support -v, but -E logs to stderr
-        DB_OUTPUT="/proc/self/fd/2" # Redirect to stderr
-    fi
+  # MOVED TO VM SIDE (init script)
+  # We no longer run Dropbear on the container side to avoid confusion and port conflicts.
+  # The socat proxy will forward traffic to the VM's IP on port 22222.
+  log INFO "Dropbear execution moved to VM side (skipping host start)"
 
-    "$RUNCVM_LD" "$RUNCVM_GUEST/usr/sbin/dropbear" $DB_FLAGS \
-      -P "$DROPBEAR_DIR/dropbear.pid" >"$DB_OUTPUT" 2>&1 &
-    sleep 0.5
-    if [ -f "$DROPBEAR_DIR/dropbear.pid" ]; then
-      log INFO "Dropbear started (PID: $(cat $DROPBEAR_DIR/dropbear.pid))"
-    else
-      log INFO "Warning - Dropbear may not have started correctly"
-    fi
-
-  else
-    log INFO "Systemd mode detected - skipping manual dropbear start (handled by service)"
-  fi
 else
   log INFO "RunCVM tools not available, skipping dropbear"
   log INFO "docker exec will not work"
@@ -1188,6 +1269,18 @@ WATCHEOF
     busybox mkdir -p "${staging_dir}/.runcvm/dropbear"
     busybox cp -a "/.runcvm/dropbear/"* "${staging_dir}/.runcvm/dropbear/"
     log "    Copied pre-generated dropbear keys"
+    
+    # INJECT AUTHORIZED_KEYS
+    # We must ensure the VM allows login with the key we generated
+    if [ -n "$KEY_PUBLIC" ]; then
+       busybox mkdir -p "${staging_dir}/root/.ssh"
+       echo "$KEY_PUBLIC" > "${staging_dir}/root/.ssh/authorized_keys"
+       busybox chmod 700 "${staging_dir}/root/.ssh"
+       busybox chmod 600 "${staging_dir}/root/.ssh/authorized_keys"
+       log "    Injected /root/.ssh/authorized_keys"
+    else
+       log "    WARNING: KEY_PUBLIC is empty, cannot inject authorized_keys"
+    fi
   fi
   
   # Copy the config file (needed by some scripts)
@@ -1858,32 +1951,68 @@ fi # End Cache Miss/No Cache logic
   
   if [ -z "$LOOPBACK_TARGET_IP" ]; then
     # Dynamic detection: Iterate known network devices to find a valid IP
-    # Prioritize eth0, then default, then any other interface
-    for dev_file in /.runcvm/network/devices/eth0 /.runcvm/network/devices/default /.runcvm/network/devices/*; do
-        [ -f "$dev_file" ] || continue
-        read _ _ _ CHECK_IP _ _ < "$dev_file"
+    # Prioritize eth0, then default, then any other interface to ensure deterministic behavior
+    # in multi-network scenarios.
+    
+    # 1. Try eth0 explicitly (Primary Interface)
+    if [ -f "/.runcvm/network/devices/eth0" ]; then
+        read _ _ _ CHECK_IP _ _ < "/.runcvm/network/devices/eth0"
         if [ -n "$CHECK_IP" ] && [ "$CHECK_IP" != "-" ]; then
-            LOOPBACK_TARGET_IP="$CHECK_IP"
-            log INFO "  Found IP from $dev_file: $LOOPBACK_TARGET_IP"
-            break
+             LOOPBACK_TARGET_IP="$CHECK_IP"
+             log INFO "  Using eth0 IP: $LOOPBACK_TARGET_IP"
         fi
-    done
+    fi
+
+    # 2. Try 'default' if eth0 failed
+    if [ -z "$LOOPBACK_TARGET_IP" ] && [ -f "/.runcvm/network/devices/default" ]; then
+        read _ _ _ CHECK_IP _ _ < "/.runcvm/network/devices/default"
+         if [ -n "$CHECK_IP" ] && [ "$CHECK_IP" != "-" ]; then
+             LOOPBACK_TARGET_IP="$CHECK_IP"
+             log INFO "  Using default IP: $LOOPBACK_TARGET_IP"
+        fi
+    fi
+
+    # 3. Fallback to any other interface
+    if [ -z "$LOOPBACK_TARGET_IP" ]; then
+        for dev_file in /.runcvm/network/devices/*; do
+            [ -f "$dev_file" ] || continue
+            # Skip eth0 and default as we already checked them
+            local bname=$(busybox basename "$dev_file")
+            [ "$bname" = "eth0" ] || [ "$bname" = "default" ] && continue
+            
+            read _ _ _ CHECK_IP _ _ < "$dev_file"
+            if [ -n "$CHECK_IP" ] && [ "$CHECK_IP" != "-" ]; then
+                LOOPBACK_TARGET_IP="$CHECK_IP"
+                log INFO "  Found fallback IP from $dev_file: $LOOPBACK_TARGET_IP"
+                break
+            fi
+        done
+    fi
   fi
   
   if [ -n "$LOOPBACK_TARGET_IP" ]; then
     log INFO "  Starting socat proxy: 127.0.0.1:$SSHD_PORT -> $LOOPBACK_TARGET_IP:$SSHD_PORT"
     
+    # Debug: Check connectivity to VM IP
+    log INFO "  Verifying connectivity to $LOOPBACK_TARGET_IP..."
+    if busybox ping -c 1 -W 1 "$LOOPBACK_TARGET_IP" >/dev/null 2>&1; then
+       log INFO "  ✓ VM IP is reachable"
+    else
+       log INFO "  ✗ VM IP is NOT reachable (yet)"
+    fi
+
     # Check if socat is available
     if command -v socat >/dev/null 2>&1; then
        # Start socat in background
        # TCP-LISTEN:22222,bind=127.0.0.1,fork,reuseaddr -> TCP:$VM_IP:22222
-       socat TCP-LISTEN:"$SSHD_PORT",bind=127.0.0.1,fork,reuseaddr TCP:"$LOOPBACK_TARGET_IP":"$SSHD_PORT" >/dev/null 2>&1 &
+       # CRITICAL: Log errors to console
+       socat TCP-LISTEN:"$SSHD_PORT",bind=127.0.0.1,fork,reuseaddr TCP:"$LOOPBACK_TARGET_IP":"$SSHD_PORT" 2>&1 &
        SOCAT_PID=$!
        log INFO "  socat started (PID: $SOCAT_PID)"
     elif [ -x "/.runcvm/guest/usr/bin/socat" ]; then
        # Fallback to bundled socat if not in PATH (e.g. if runcvm-ctr-defaults didnt alias it correctly yet?)
        # Note: We rely on alias or absolute path.
-       /.runcvm/guest/usr/bin/socat TCP-LISTEN:"$SSHD_PORT",bind=127.0.0.1,fork,reuseaddr TCP:"$LOOPBACK_TARGET_IP":"$SSHD_PORT" >/dev/null 2>&1 &
+       /.runcvm/guest/usr/bin/socat TCP-LISTEN:"$SSHD_PORT",bind=127.0.0.1,fork,reuseaddr TCP:"$LOOPBACK_TARGET_IP":"$SSHD_PORT" 2>&1 &
        SOCAT_PID=$!
        log INFO "  socat started (PID: $SOCAT_PID) via absolute path"
     else

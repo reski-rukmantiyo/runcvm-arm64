@@ -96,33 +96,61 @@ fi
 # Strategy: Loopback Connection (Force 127.0.0.1)
 # We now configure the container environment (via runcvm-ctr-firecracker) to
 # DNAT 127.0.0.1:22222 to the VM's internal IP.
-# This works for:
-# 1. Standard Network (DNAT rule added)
-# 2. Kubernetes/SLIRP (Slirp forwarder binds localhost)
-# 3. Host Network (VM network namespace shared, so localhost is VM localhost)
+SSH_CONNECT_IP="127.0.0.1"
+SSH_TARGET_IP="$SSH_CONNECT_IP" # For dbclient
 
-SSH_TARGET_IP="127.0.0.1"
+# Determine IP to check for connectivity (The real VM IP)
+# load_network (called in loop above) should have set DOCKER_IF_IP
+# If not (e.g. loaded 'default' but it was weird), try to find a valid IP
+VM_CHECK_IP="$DOCKER_IF_IP"
+
+if [ -z "$VM_CHECK_IP" ] || [ "$VM_CHECK_IP" = "-" ]; then
+  # Fallback: check eth0 explicitly
+  if [ -s /.runcvm/network/devices/eth0 ]; then
+     read _ _ _ VM_CHECK_IP _ _ < /.runcvm/network/devices/eth0
+  fi
+fi
 
 # Verify connectivity before connecting
 # This avoids "Host is unreachable" errors if the VM isn't fully ready or ARP is converging
-if [ -n "$SSH_TARGET_IP" ]; then
-   # Try to ping the VM (fast check)
-   busybox ping -c 1 -W 1 "$SSH_TARGET_IP" >/dev/null 2>&1
+if [ -n "$VM_CHECK_IP" ] && [ "$VM_CHECK_IP" != "-" ]; then
+   if [ "$RUNCVM_LOG_LEVEL" = "DEBUG" ]; then echo "Waiting for VM ($VM_CHECK_IP)..." >&2; fi
    
-   # If ping fails, we might still try, but it's a bad sign.
-   # We can loop here slightly to wait for ARP?
-   # But the outer loop (line 77) already waits for load_network.
-   # Let's verify connectivity explicitly.
-   count=0
-   while ! busybox ping -c 1 -W 1 "$SSH_TARGET_IP" >/dev/null 2>&1 && [ $count -lt 5 ]; do
+   # Wait for VM to answer ping (up to 5 seconds)
+   # We need the VM to be reachable via the bridge for socat to work
+   check_count=0
+   while ! busybox ping -c 1 -W 1 "$VM_CHECK_IP" >/dev/null 2>&1 && [ $check_count -lt 25 ]; do
      sleep 0.2
-     count=$((count+1))
+     check_count=$((check_count+1))
    done
+   
+   # Wait for SSH Port (22222) to be open (up to 10 seconds)
+   # This avoids "Connection refused" if network is up but Dropbear isn't ready
+   port_count=0
+   while ! nc -z -w 1 "$VM_CHECK_IP" 22222 >/dev/null 2>&1 && [ $port_count -lt 20 ]; do
+      sleep 0.5
+      port_count=$((port_count+1))
+   done
+
+   if [ $check_count -ge 25 ]; then
+     echo "Warning: VM $VM_CHECK_IP did not respond to ping, connection may fail" >&2
+   fi
+else
+   # If we can't find the IP, we just proceed and hope sending to localhost works (maybe legacy mode)
+   :
 fi
 
-# Enable verbose logging if RUNCVM_LOG_LEVEL is DEBUG
+# Debug client key
 if [ "$RUNCVM_LOG_LEVEL" = "DEBUG" ]; then
-    opts+=("-v")
+  echo "DEBUG: Client Key Check:" >&2
+  ls -l /.runcvm/dropbear/key >&2
 fi
 
-exec $RUNCVM_GUEST/usr/bin/dbclient "${opts[@]}" -p $SSHD_PORT -y -y -i /.runcvm/dropbear/key root@$SSH_TARGET_IP "$command '$uidgid' '$(echo -n $cwd | to_bin)' '$args_bin' '$env_bin'"
+# Finally, execute the command via SSH
+# We use dbclient (Dropbear's SSH client)
+# -y -y: Always accept hostkey AND suppress the confirmation message
+# -i: Identify file
+# -p: Port
+# Note: Host variable is passed as argument, but we proxy via 127.0.0.1
+# using socat. So we connect to root@127.0.0.1
+exec $RUNCVM_GUEST/usr/bin/dbclient "${opts[@]}" -p 22222 -y -y -i /.runcvm/dropbear/key root@$SSH_TARGET_IP "$command '$uidgid' '$(echo -n $cwd | to_bin)' '$args_bin' '$env_bin'"
