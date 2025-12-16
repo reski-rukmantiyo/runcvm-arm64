@@ -35,15 +35,13 @@
 ## Rank 4: Complex Implementation
 
 ### 3. Rootfs Caching
-*   **Status**: ❌ Missing (Marked In Progress)
+*   **Status**: ✅ Complete (Rank 4 Solved!)
 *   **Difficulty**: 4/5
 *   **Analysis**:
-    *   **Challenge**: Currently, `runcvm-ctr-firecracker` rebuilds the ext4 rootfs image from scratch on *every* boot (copying files from container directory to `/dev/shm`). This is the main bottleneck for boot time (~5-10s for large images).
-    *   **Gap**: No caching mechanism exists. `create_rootfs_from_dir` is always called.
-    *   **Requirements**:
-        *   Mechanism to hash the container image layers/content to create a cache key.
-        *   Persistent cache storage (host folder).
-        *   Logic to create a "base" immutable rootfs and use a CoW (Copy-on-Write) overlay (snapshot) for the active VM instance, so the base image isn't modified. Firecracker supports this via `is_read_only` drive + snapshot, but `runcvm` logic needs to support it.
+    *   **Challenge**: Optimization of boot time by avoiding rootfs rebuilds.
+    *   **Solution**: Implemented persistence based on image layer hashes with LRU eviction.
+    *   **Result**: Warm boots skip rootfs build. Stale entrypoints handled via dynamic `debugfs` injection.
+
 
 ### 4. Systemd Containers
 *   **Status**: ✅ Complete (Rank 4 Solved!)

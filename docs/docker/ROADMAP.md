@@ -68,7 +68,7 @@ This roadmap focuses on **Docker runtime** integration with Firecracker, achievi
 | **Bind mounts** | ✅ | ✅ | Complete | - | ✅ Done |
 | **tmpfs mounts** | ✅ | 🟡 | Partial | Medium | Week 5-6 |
 | **Volume drivers** | ✅ | ❌ | Missing | Low | Phase 4 |
-| **Rootfs caching** | N/A | ❌ | Missing | High | Week 7-8 |
+| **Rootfs caching** | N/A | ✅ | Complete | High | ✅ Done |
 
 ### Networking
 
@@ -280,11 +280,11 @@ docker run -d --runtime=runcvm -e RUNCVM_HYPERVISOR=firecracker \
 **Current Status**: Started December 13, 2025
 
 **Tasks**:
-- [ ] **Week 5**: Rootfs caching
-  - [ ] Implement base image cache
-  - [ ] Generate cache key from image layers
-  - [ ] Use overlay for per-instance changes
-  - [ ] Add cache eviction (LRU, max size)
+- [x] **Week 5**: Rootfs caching
+  - [x] Implement base image cache
+  - [x] Generate cache key from image layers
+  - [x] Use overlay for per-instance changes
+  - [x] Add cache eviction (LRU, max size)
   
   ```bash
   # Target: Second boot should be <150ms
@@ -298,8 +298,9 @@ docker run -d --runtime=runcvm -e RUNCVM_HYPERVISOR=firecracker \
   - [ ] Validate tmpfs size limits
   
 **Expected Outcome**:
-- ✅ Boot time <500ms cold, <150ms warm
-- ✅ tmpfs mounts work correctly
+- ✅ Boot time <500ms cold, <150ms warm (logic implemented, hardware dependent)
+- ✅ Rootfs creation overhead eliminated for cached images
+- 🔄 tmpfs mounts work correctly
 
 **Tasks**:
 - [x] **Week 5**: Host networking
@@ -552,7 +553,7 @@ docker run --runtime=runcvm \
 | **Dec 7, 2025** | **Phase 3 Started** | ✅ |
 | **Dec 13, 2025** | **Storage & Persistence Complete** | ✅ **ACHIEVED** |
 | **Dec 15, 2025** | **Systemd & DinD Support** | ✅ **ACHIEVED** |
-| Jan 18, 2026 | Rootfs caching complete | 🔄 In Progress |
+| Dec 16, 2025 | Rootfs caching complete | ✅ **ACHIEVED** |
 | Feb 22, 2026 | Performance optimization done | 📅 |
 | Mar 1, 2026 | Docker feature parity achieved | 📅 |
 | Jun 2026 | Advanced features | 📅 |
@@ -627,7 +628,7 @@ cd tests/
 - [x] Create NFS daemon infrastructure
 - [x] Test bind mounts and named volumes
 - [x] Document NFS volume mounting design
-- [ ] **NEW**: Implement rootfs caching
+- [x] **NEW**: Implement rootfs caching
 - [ ] **NEW**: Complete tmpfs mount support
 
 ### Recent Accomplishments
@@ -658,6 +659,13 @@ cd tests/
   - Full nested container support using `cgroupfs` driver
   - Configurable kernel arguments via `RUNCVM_KERNEL_ARGS`
   - Validated with SystemD outer container
+
+- ✅ **Rootfs Caching Support** (December 16, 2025)
+  - Implemented persistent rootfs cache based on image layer hash
+  - **LRU Eviction**: Automatic cleanup of old images (default 5GB limit)
+  - **Performance**: Skips rootfs creation step on warm boots
+  - **Stability**: Fixed stale entrypoint issues via `debugfs` injection
+  - **Resizing**: Integrated `resize2fs` for dynamic rootfs expansion
 
 ### Daily Standup Questions
 1. What did I complete yesterday?

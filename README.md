@@ -523,6 +523,7 @@ RunCVM (Firecracker Edition) uses Amazon Firecracker as the default hypervisor.
 - **MicroVMs**: Uses KVM-based isolation with a minimal attack surface.
 - **Storage**:
   - Uses ext4 root filesystem images created on-the-fly from container contents.
+  - **Rootfs Caching**: Intelligently caches rootfs images for sub-second warm boots.
   - **NFSv3-over-TCP**: Robust volume management using a host-side user-space NFS server (`unfsd`).
   - **Dynamic Volume Support**: Supports multiple Docker volumes (`-v`) and bind mounts with automatic port allocation.
   - **Persistence**: Full data persistence across VM restarts for named volumes.
