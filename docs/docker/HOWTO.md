@@ -427,3 +427,37 @@ docker run --runtime=runcvm \
   -e RUNCVM_ENABLE_BALLOON=true \
   ubuntu
 ```
+
+---
+
+## 8. Advanced Configuration
+
+This section details advanced environment variables for fine-tuning RunCVM behavior.
+
+### Storage & Filesystem
+
+#### `RUNCVM_ROOTFS_SIZE`
+Overrides the default size of the root filesystem created for the guest VM.
+- **Default**: `256M`
+- **Example**: `docker run -e RUNCVM_ROOTFS_SIZE=1G ...`
+- **Use Case**: When your container workload writes significant data to the root overlay (not in a volume) and exceeds 256MB.
+
+#### `ROOTFS_CACHE_ACTIVE`
+Controls the rootfs caching mechanism.
+- **Values**: `1` (or `true`) to enable; `0` (or `false`) to disable.
+- **Default**: `1`
+- **Use Case**: Disable caching during development if you suspect potential cache coherency issues, though this will significantly slow down boot times.
+
+### Kernel Configuration
+
+#### `RUNCVM_KERNEL_ARGS`
+Appends additional parameters to the Firecracker kernel command line.
+- **Example**: `docker run -e RUNCVM_KERNEL_ARGS="console=ttyS0 reboot=k panic=1 systemd.unified_cgroup_hierarchy=0" ...`
+- **Use Case**: Necessary for specific kernel tuning or enabling legacy cgroup v1 support for older Docker-in-Docker workloads.
+
+### Summary of Other Variables
+These variables are documented in earlier sections:
+- **`RUNCVM_SYSTEMD`**: Enable Systemd PID 1 (See [Section 4](#4-systemd-support)).
+- **`RUNCVM_NETWORK_MODE`**: Enable Host Networking (See [Section 6](#6-network)).
+- **`RUNCVM_ENABLE_BALLOON`**: Enable Memory Ballooning (See [Section 7](#7-resource-management)).
+- **`RUNCVM_BALLOON_SIZE_MIB`**: Set Balloon Size (See [Section 7](#7-resource-management)).

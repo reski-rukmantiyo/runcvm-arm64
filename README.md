@@ -797,6 +797,46 @@ Control the verbosity of RunCVM logs (especially for Firecracker).
 - `INFO`: Show startup progress and network config.
 - `DEBUG`: Verbose output for debugging.
 
+### `--env=RUNCVM_SYSTEMD=<true|1>`
+
+Set to `true` or `1` to run systemd as PID 1 inside the VM. This is required for running full OS environments (like standard Ubuntu/Debian images) or Docker-in-Docker.
+- **Note**: Recommended to use with `--privileged`.
+
+### `--env=RUNCVM_ROOTFS_SIZE=<size>`
+
+Override the default size of the root filesystem created for the VM (default: `256M`).
+- **Format**: Standard `truncate` tool format (e.g., `512M`, `1G`).
+- **Use Case**: If your container needs more scratch space on its overlay filesystem than the default.
+
+### `--env=ROOTFS_CACHE_ACTIVE=<0|1>`
+
+Control rootfs caching (Default: `1` / `true`).
+- `1` or `true`: Enabled. Rootfs generation is cached for faster subsequent boots.
+- `0` or `false`: Disabled. Rootfs is recreated on every boot.
+
+### `--env=RUNCVM_NETWORK_MODE=<host>`
+
+Set to `host` to enable host networking mode.
+- **Requires**: `--net=host` and `--privileged`.
+- **Effect**: The VM shares the "host's" network attributes (simulated via NAT/TAP mapping in Firecracker).
+
+### `--env=RUNCVM_KERNEL_ARGS=<args>`
+
+Append additional arguments to the Firecracker kernel command line.
+- **Example**: `RUNCVM_KERNEL_ARGS="systemd.unified_cgroup_hierarchy=0"`
+- **Note**: For QEMU mode, use `RUNCVM_KERNEL_APPEND` instead.
+
+### `--env=RUNCVM_ENABLE_BALLOON=<true>`
+
+Enable the virtio-balloon device for dynamic memory management.
+- `true`: Enables the device.
+
+### `--env=RUNCVM_BALLOON_SIZE_MIB=<size>`
+
+Set the initial size (in MiB) of the memory balloon.
+- **Effect**: This amount of memory is "reclaimed" from the guest (made unavailable) at boot. It can be returned later (though dynamic resizing via API is a future feature).
+- **Default**: `0` (Disabled).
+
 ### `--env=RUNCVM_BREAK=<values>`
 
 Enable breakpoints (falling to bash shell) during the RunCVM Container/VM boot process.
