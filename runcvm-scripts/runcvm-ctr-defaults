@@ -49,7 +49,7 @@ create_aliases() {
       busybox awk cat chgrp chmod cut grep head hostname init ln ls mkdir mountpoint poweroff ps rm rmdir sh sysctl touch tr \
       ip jq \
       dnsmasq \
-      blkid findmnt getent mke2fs resize2fs mount nc \
+      blkid findmnt getent mke2fs resize2fs mount nc ping socat \
       xtables-nft-multi xtables-legacy-multi \
       qemu-system-aarch64 qemu-ga \
       dbclient dropbear dropbearkey \
