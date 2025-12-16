@@ -98,7 +98,34 @@ fi
 if [ -f /.runcvm/network/kubernetes_mode ]; then
   SSH_TARGET_IP="127.0.0.1"
 else
+  # Ensure we have the latest network info
+  load_network "default"
   SSH_TARGET_IP="$DOCKER_IF_IP"
+  
+  # Fallback: If default is missing or empty, try eth0 directly
+  if [ -z "$SSH_TARGET_IP" ]; then
+     if [ -s /.runcvm/network/devices/eth0 ]; then
+       load_network "eth0"
+       SSH_TARGET_IP="$DOCKER_IF_IP"
+     fi
+  fi
+fi
+
+# Verify connectivity before connecting
+# This avoids "Host is unreachable" errors if the VM isn't fully ready or ARP is converging
+if [ -n "$SSH_TARGET_IP" ]; then
+   # Try to ping the VM (fast check)
+   busybox ping -c 1 -W 1 "$SSH_TARGET_IP" >/dev/null 2>&1
+   
+   # If ping fails, we might still try, but it's a bad sign.
+   # We can loop here slightly to wait for ARP?
+   # But the outer loop (line 77) already waits for load_network.
+   # Let's verify connectivity explicitly.
+   count=0
+   while ! busybox ping -c 1 -W 1 "$SSH_TARGET_IP" >/dev/null 2>&1 && [ $count -lt 5 ]; do
+     sleep 0.2
+     count=$((count+1))
+   done
 fi
 
 exec $RUNCVM_GUEST/usr/bin/dbclient "${opts[@]}" -p $SSHD_PORT -y -y -i /.runcvm/dropbear/key root@$SSH_TARGET_IP "$command '$uidgid' '$(echo -n $cwd | to_bin)' '$args_bin' '$env_bin'"
