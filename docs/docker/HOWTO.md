@@ -165,3 +165,59 @@ docker run --rm --runtime=runcvm \
   --net net2 \
   alpine ip addr show
 ```
+
+---
+
+## 6. Resource Management
+
+RunCVM allows precise control over the resources allocated to the Firecracker microVM, including CPU pinning, memory limits, and ballooning.
+
+### CPU Configuration
+
+#### vCPU Allocation
+By default, RunCVM matches the container's CPU quota/period to the number of Firecracker vCPUs. You can control this using Docker's standard `--cpus` flag.
+
+- **Formula**: `ceil(quota / period)` = vCPUs.
+- **Minimum**: 1 vCPU.
+
+**Example**: Allocate 2 vCPUs to the VM.
+```bash
+docker run --runtime=runcvm -e RUNCVM_HYPERVISOR=firecracker --cpus=2 ubuntu
+```
+
+#### CPU Pinning
+To pin the entire Firecracker process (and thus its vCPUs) to specific host cores, use Docker's `--cpuset-cpus` flag. This is critical for high-performance workloads to avoid context switching and noisy neighbors.
+
+**Example**: Pin the VM to physical cores 0 and 1.
+```bash
+docker run --runtime=runcvm -e RUNCVM_HYPERVISOR=firecracker --cpus=2 --cpuset-cpus="0,1" ubuntu
+```
+
+### Memory Configuration
+
+#### RAM Allocation
+Use Docker's `-m` / `--memory` flag to set the amount of RAM available to the Guest VM.
+
+> [!NOTE]
+> RunCVM automatically adds a 256MB overhead to the container's *cgroup limit* to account for the Firecracker process, virtiofsd, and networking overhead. This ensures the VM gets the full amount of RAM you requested without being OOM-killed by the host.
+
+**Example**: Give the VM 1GB of RAM.
+```bash
+# VM sees 1024MB RAM. Container cgroup limit is set to ~1280MB.
+docker run --runtime=runcvm -e RUNCVM_HYPERVISOR=firecracker -m 1024M ubuntu
+```
+
+#### Memory Ballooning
+RunCVM supports virtio-balloon to dynamically reclaim memory from the guest.
+
+**Configuration**:
+- `RUNCVM_ENABLE_BALLOON=true`: Enables the balloon device.
+- `RUNCVM_BALLOON_SIZE_MIB`: (Optional) Initial size of the balloon in MiB (default: 0).
+
+**Example**: Enable ballooning.
+```bash
+docker run --runtime=runcvm \
+  -e RUNCVM_HYPERVISOR=firecracker \
+  -e RUNCVM_ENABLE_BALLOON=true \
+  ubuntu
+```
