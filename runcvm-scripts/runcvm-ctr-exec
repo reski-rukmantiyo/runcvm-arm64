@@ -93,23 +93,15 @@ if [ "$delay" -ne 0 ]; then
 fi
 
 # Determine the SSH target IP
-# In Kubernetes/SLIRP mode, we need to connect to 127.0.0.1 because
-# SLIRP port forwarding binds to localhost, not the VM's internal IP
-if [ -f /.runcvm/network/kubernetes_mode ]; then
-  SSH_TARGET_IP="127.0.0.1"
-else
-  # Ensure we have the latest network info
-  load_network "default"
-  SSH_TARGET_IP="$DOCKER_IF_IP"
-  
-  # Fallback: If default is missing or empty, try eth0 directly
-  if [ -z "$SSH_TARGET_IP" ]; then
-     if [ -s /.runcvm/network/devices/eth0 ]; then
-       load_network "eth0"
-       SSH_TARGET_IP="$DOCKER_IF_IP"
-     fi
-  fi
-fi
+# Strategy: Loopback Connection (Force 127.0.0.1)
+# We now configure the container environment (via runcvm-ctr-firecracker) to
+# DNAT 127.0.0.1:22222 to the VM's internal IP.
+# This works for:
+# 1. Standard Network (DNAT rule added)
+# 2. Kubernetes/SLIRP (Slirp forwarder binds localhost)
+# 3. Host Network (VM network namespace shared, so localhost is VM localhost)
+
+SSH_TARGET_IP="127.0.0.1"
 
 # Verify connectivity before connecting
 # This avoids "Host is unreachable" errors if the VM isn't fully ready or ARP is converging
@@ -126,6 +118,11 @@ if [ -n "$SSH_TARGET_IP" ]; then
      sleep 0.2
      count=$((count+1))
    done
+fi
+
+# Enable verbose logging if RUNCVM_LOG_LEVEL is DEBUG
+if [ "$RUNCVM_LOG_LEVEL" = "DEBUG" ]; then
+    opts+=("-v")
 fi
 
 exec $RUNCVM_GUEST/usr/bin/dbclient "${opts[@]}" -p $SSHD_PORT -y -y -i /.runcvm/dropbear/key root@$SSH_TARGET_IP "$command '$uidgid' '$(echo -n $cwd | to_bin)' '$args_bin' '$env_bin'"

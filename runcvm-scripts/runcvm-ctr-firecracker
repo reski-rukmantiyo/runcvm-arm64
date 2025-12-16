@@ -136,6 +136,32 @@ cleanup_nfs_volumes() {
 
 trap cleanup_nfs_volumes EXIT SIGTERM SIGINT
 
+generate_network_configs() {
+  local staging_dir="$1"
+  # Save network configuration for all VMs
+  if [ -d "/.runcvm/network/devices" ]; then
+    for net_dev_file in $(busybox ls /.runcvm/network/devices/* | busybox sort); do
+      local ifname=$(busybox basename "$net_dev_file")
+      [ "$ifname" = "default" ] && continue
+      
+      read DOCKER_IF DOCKER_IF_MAC DOCKER_IF_MTU DOCKER_IF_IP DOCKER_IF_IP_NETPREFIX DOCKER_IF_IP_GW < "$net_dev_file"
+      
+      # Firecracker MAC
+      local fc_mac=$(echo "$DOCKER_IF_MAC" | busybox sed 's/^..:..:../AA:FC:00/')
+      
+      log "  Saving network config for $ifname: IP=$DOCKER_IF_IP/$DOCKER_IF_IP_NETPREFIX GW=$DOCKER_IF_IP_GW"
+      
+      cat > "${staging_dir}/.runcvm-network-${ifname}" << NETEOF
+FC_IP="$DOCKER_IF_IP"
+FC_PREFIX="$DOCKER_IF_IP_NETPREFIX"
+FC_GW="$DOCKER_IF_IP_GW"
+FC_MTU="$DOCKER_IF_MTU"
+FC_MAC="$fc_mac"
+NETEOF
+    done
+  fi
+}
+
 # Create rootfs image from a source directory
 create_rootfs_from_dir() {
   local source_dir="$1"
@@ -212,19 +238,32 @@ main() {
   
   local rootfs_path="/rootfs.ext4"
   local entrypoint_file="/.runcvm/entrypoint"
-  local cache_key="${RUNCVM_CACHE_KEY}"
+  local staging_dir="/tmp/rootfs-staging"
+  # Append version to invalidate old caches with stale init scripts
+  local cache_key="${RUNCVM_CACHE_KEY}-v2"
   local cache_file=""
   local use_cache=0
+
+  # Check if caching is globally enabled via env var (Default: 1/true)
+  local cache_active="${ROOTFS_CACHE_ACTIVE:-1}"
   
-  if [ -n "$cache_key" ] && [ -d "/.runcvm/cache" ]; then
-    cache_file="/.runcvm/cache/${cache_key}.ext4"
-    use_cache=1
-    log "Cache Key: $cache_key"
+  if [ "$cache_active" = "1" ] || [ "$cache_active" = "true" ]; then
+      if [ -n "$cache_key" ] && [ -d "/.runcvm/cache" ]; then
+        cache_file="/.runcvm/cache/${cache_key}.ext4"
+        use_cache=1
+        log "Cache Key: $cache_key"
+      fi
+  else
+      log "Rootfs caching DISABLED via ROOTFS_CACHE_ACTIVE=$cache_active"
   fi
 
   # CACHE HIT CHECK
   if [ "$use_cache" = "1" ] && [ -f "$cache_file" ]; then
     log "Cache HIT! Using cached rootfs: $cache_file"
+    busybox mkdir -p "$staging_dir"
+    
+    # Generate network configs for injection
+    generate_network_configs "$staging_dir"
     
     # Fast copy small image
     if cp --sparse=always "$cache_file" "$rootfs_path" 2>/dev/null; then
@@ -275,7 +314,7 @@ main() {
     # This avoids the self-copy problem where mke2fs would copy the rootfs into itself
     
     # Use /tmp for staging instead of /dev/shm to avoid ENOSPC on large images
-    local staging_dir="/tmp/rootfs-staging"
+    # staging_dir defined above
     
     # Calculate source size (excluding .runcvm which has RunCVM binaries)
     log "Calculating container size (excluding .runcvm)..."
@@ -336,9 +375,13 @@ main() {
 
    # Step 1b: Create init script in staging area
    log "  Creating init script..."
+   log " # Export log level to init script"
    local init_script="${staging_dir}/init"
-   cat > "$init_script" << 'INITEOF'
-#!/bin/sh
+   cat > "$init_script" << INITEOF
+#!${RUNCVM_GUEST}/bin/sh
+export RUNCVM_LOG_LEVEL="${RUNCVM_LOG_LEVEL}"
+INITEOF
+cat >> "$init_script" << 'INITEOF'
 # Firecracker minimal init for RunCVM
 # This runs as PID 1 inside the Firecracker VM
 
@@ -495,6 +538,8 @@ if [ -d "$RUNCVM_GUEST/lib" ]; then
   else
     log INFO "Dynamic linker not found at $RUNCVM_LD"
     # Fallback: check if tools work anyway (e.g. static busybox)
+    # Copy EPKA (Authorized Keys) removed
+
     if "$RUNCVM_GUEST/bin/busybox" true 2>/dev/null; then
        log INFO "Busybox works without explicit LD check"
        runcvm_ip() { "$RUNCVM_GUEST/bin/busybox" ip "$@"; }
@@ -506,10 +551,12 @@ else
   log INFO "RunCVM tools not found at $RUNCVM_GUEST"
 fi
 
-# Bring up loopback
+# Bring up loopback unconditionally (using system tools if available)
+ip link set lo up 2>/dev/null || ifconfig lo up 2>/dev/null || true
+
+# Bring up loopback using RunCVM tools if available
 if [ "$HAVE_RUNCVM_TOOLS" = "1" ]; then
-  runcvm_ip link set lo up 2>/dev/null  # Ensure loopback is up
-  ip link set lo up 2>/dev/null || ifconfig lo up 2>/dev/null || true
+  runcvm_ip link set lo up 2>/dev/null  # Ensure loopback is up via runcvm_ip too
   
   # Configure eth0 with static IP
   # Cloud-init usually handles this, but for non-cloud-init images (or early boot connectivity)
@@ -660,10 +707,14 @@ fi
 
 log INFO "========== NETWORK SETUP END =========="
 
+
+
 # Setup DNS
 if [ -f /.runcvm-resolv.conf ]; then
   cp /.runcvm-resolv.conf /etc/resolv.conf 2>/dev/null || true
 fi
+
+
 
 # ==========================================================================
 # NFS VOLUME MOUNTS - Mount NFS shares from host unfsd
@@ -752,40 +803,56 @@ DROPBEAR_DIR="/.runcvm/dropbear"
 
 if [ "$HAVE_RUNCVM_TOOLS" = "1" ]; then
   mkdir -p "$DROPBEAR_DIR"
-  
-  # Check if we need to generate keys
+
+  # 1. Ensure Host Key Exists
   if [ ! -f "$DROPBEAR_DIR/key" ]; then
     log INFO "Generating dropbear SSH keys..."
-    # Generate ed25519 key
     "$RUNCVM_LD" "$RUNCVM_GUEST/usr/bin/dropbearkey" -t ed25519 -f "$DROPBEAR_DIR/key" >/dev/null 2>&1
-    
-    # Extract public key for EPKA
-    KEY_PUBLIC=$("$RUNCVM_LD" "$RUNCVM_GUEST/usr/bin/dropbearkey" -y -f "$DROPBEAR_DIR/key" 2>/dev/null | grep ^ssh | cut -d' ' -f2)
-    
-    # Create EPKA config
-    cat > "$DROPBEAR_DIR/epka.json" << EPKAEOF
-[{"user":"root","keytype":"ssh-ed25519","key":"$KEY_PUBLIC","options":"no-X11-forwarding","comments":""}]
-EPKAEOF
-    chmod 400 "$DROPBEAR_DIR/epka.json" "$DROPBEAR_DIR/key"
-    log INFO "SSH keys generated"
-    log INFO "DEBUG: Keys in $DROPBEAR_DIR:"
-    ls -la "$DROPBEAR_DIR" | while read line; do log INFO "  $line"; done
   else
     log INFO "Using pre-generated SSH keys"
-    log INFO "DEBUG: Pre-existing keys in $DROPBEAR_DIR:"
-    ls -la "$DROPBEAR_DIR" | while read line; do log INFO "  $line"; done
+  fi
+
+  # 2. Extract Public Key (Unconditionally)
+  KEY_PUBLIC=$("$RUNCVM_LD" "$RUNCVM_GUEST/usr/bin/dropbearkey" -y -f "$DROPBEAR_DIR/key" 2>/dev/null | grep ^ssh | cut -d' ' -f2)
+
+  # 3. Setup authorized_keys (Unconditionally)
+  mkdir -p /root/.ssh
+  if [ -n "$KEY_PUBLIC" ]; then
+    echo "$KEY_PUBLIC" > /root/.ssh/authorized_keys
+    chmod 700 /root/.ssh
+    chmod 600 /root/.ssh/authorized_keys
+    log INFO "Configured /root/.ssh/authorized_keys"
+  else
+    log ERROR "Failed to extract public key from $DROPBEAR_DIR/key"
+    # Fallback? If we can't get key, auth will fail.
   fi
   
   # Start dropbear SSH server
   # Only start manually if NOT running Systemd (Systemd service handles it otherwise)
   if [ "$RUNCVM_SYSTEMD" != "1" ] && [ "$RUNCVM_SYSTEMD" != "true" ]; then
     log INFO "Starting dropbear on port $SSHD_PORT..."
-  EPKA_LIB="$RUNCVM_GUEST/tmp/dropbear/libepka_file.so"
-  
-  if [ -f "$EPKA_LIB" ]; then
-    "$RUNCVM_LD" "$RUNCVM_GUEST/usr/sbin/dropbear" -REF -p "$SSHD_PORT" \
-      -A "$EPKA_LIB,$DROPBEAR_DIR/epka.json" \
-      -P "$DROPBEAR_DIR/dropbear.pid" 2>/dev/null &
+    
+    # Ensure HOME is set for authorized_keys lookup
+    export HOME=/root
+   
+    # Prepare Dropbear flags
+    # -R: Create hostkeys if missing
+    # -E: Log to stderr
+    # -F: Foreground
+    # -s: Disable password auth (force key) -- CRITICAL for security and ensuring key works
+    # -g: Disable password for root
+    DB_FLAGS="-REF -s -g -p $SSHD_PORT"
+    
+    # If debug mode, log to stderr
+    # Otherwise, silence output to /dev/null
+    DB_OUTPUT="/dev/null"
+    if [ "$RUNCVM_LOG_LEVEL" = "DEBUG" ]; then
+        # Dropbear doesn't support -v, but -E logs to stderr
+        DB_OUTPUT="/proc/self/fd/2" # Redirect to stderr
+    fi
+
+    "$RUNCVM_LD" "$RUNCVM_GUEST/usr/sbin/dropbear" $DB_FLAGS \
+      -P "$DROPBEAR_DIR/dropbear.pid" >"$DB_OUTPUT" 2>&1 &
     sleep 0.5
     if [ -f "$DROPBEAR_DIR/dropbear.pid" ]; then
       log INFO "Dropbear started (PID: $(cat $DROPBEAR_DIR/dropbear.pid))"
@@ -1247,27 +1314,8 @@ VMEXECEOF
   
   # Save network configuration for the VM
   # Save network configuration for all VMs
-  if [ -d "/.runcvm/network/devices" ]; then
-    for net_dev_file in $(busybox ls /.runcvm/network/devices/* | busybox sort); do
-      local ifname=$(busybox basename "$net_dev_file")
-      [ "$ifname" = "default" ] && continue
-      
-      read DOCKER_IF DOCKER_IF_MAC DOCKER_IF_MTU DOCKER_IF_IP DOCKER_IF_IP_NETPREFIX DOCKER_IF_IP_GW < "$net_dev_file"
-      
-      # Firecracker MAC
-      local fc_mac=$(echo "$DOCKER_IF_MAC" | busybox sed 's/^..:..:../AA:FC:00/')
-      
-      log "  Saving network config for $ifname: IP=$DOCKER_IF_IP/$DOCKER_IF_IP_NETPREFIX GW=$DOCKER_IF_IP_GW"
-      
-      cat > "${staging_dir}/.runcvm-network-${ifname}" << NETEOF
-FC_IP="$DOCKER_IF_IP"
-FC_PREFIX="$DOCKER_IF_IP_NETPREFIX"
-FC_GW="$DOCKER_IF_IP_GW"
-FC_MTU="$DOCKER_IF_MTU"
-FC_MAC="$fc_mac"
-NETEOF
-    done
-  fi
+  # Generate network configuration files
+  generate_network_configs "$staging_dir"
   
   # Inject Systemd Service for Entrypoint
   if [ "$RUNCVM_SYSTEMD" = "1" ] || [ "$RUNCVM_SYSTEMD" = "true" ]; then
@@ -1760,8 +1808,93 @@ fi # End Cache Miss/No Cache logic
   if [ -n "$network_interfaces_json" ]; then
     network_config=",\"network-interfaces\":[$network_interfaces_json]"
   fi
+  # ==========================================================================
+  # INJECT NETWORK CONFIG INTO ROOTFS
+  # ==========================================================================
+  # Since network config is generated AFTER rootfs creation, we must inject it.
+  # This fixes the IP mismatch where Cached/New rootfs doesn't have the new config.
+  log "Injecting updated configuration into rootfs..."
+  if command -v debugfs >/dev/null 2>&1; then
+    # We must inject the generated /init script because it contains the embedded IP configuration.
+    # Cached rootfs has a stale /init with old IP.
+    if [ -f "$staging_dir/init" ]; then
+        debugfs -w -R "rm /init" "$rootfs_path" >/dev/null 2>&1 || true
+        if ! debugfs -w -R "write $staging_dir/init /init" "$rootfs_path" >/dev/null 2>&1; then
+             log "  [WARNING] Failed to inject /init into rootfs"
+        else
+             log "  Injected /init"
+        fi
+    fi
+    
+    # Also inject other files if present (e.g. if we switched to file-based config later)
+    for net_conf in "$staging_dir"/.runcvm-network-*; do
+      [ -f "$net_conf" ] || continue
+      local fname=$(busybox basename "$net_conf")
+      debugfs -w -R "rm /$fname" "$rootfs_path" >/dev/null 2>&1 || true
+      debugfs -w -R "write $net_conf /$fname" "$rootfs_path" >/dev/null 2>&1
+    done
+  else
+    log "  [WARNING] debugfs missing, cannot inject network config! Networking may fail."
+  fi
 
-  # Build vsock config for FUSE volumes
+  # ==========================================================================
+  # LOOPBACK CONNECTION SETUP (For docker exec) - HOST SIDE
+  # ==========================================================================
+  # We use socat as a user-space proxy to forward 127.0.0.1:22222 -> VM:22222
+  # This works without privileges (unlike iptables/sysctl) and supports concurrency.
+  
+  log INFO "Configuring Loopback Access (socat proxy) for docker exec..."
+  SSHD_PORT=22222 # Ensure variable is available in this scope
+  
+  # We need the VM's bridge IP (from the Loopback Alias we set up earlier)
+  # Actually, the IP we want to connect TO is the VM's IP.
+  # The VM's IP is DOCKER_IF_IP (passed via env or file).
+  # BUT we are on the host (container). The VM is connected via TAP.
+  # The VM IP is reachable via the bridge.
+  
+  LOOPBACK_TARGET_IP=""
+  # Try to reuse the IP determined during network setup
+  if [ -n "$DOCKER_IF_IP" ] && [ "$DOCKER_IF_IP" != "-" ]; then
+     LOOPBACK_TARGET_IP="$DOCKER_IF_IP"
+     log INFO "  Using DOCKER_IF_IP ($LOOPBACK_TARGET_IP) for loopback proxy"
+  fi
+  
+  if [ -z "$LOOPBACK_TARGET_IP" ]; then
+    # Dynamic detection: Iterate known network devices to find a valid IP
+    # Prioritize eth0, then default, then any other interface
+    for dev_file in /.runcvm/network/devices/eth0 /.runcvm/network/devices/default /.runcvm/network/devices/*; do
+        [ -f "$dev_file" ] || continue
+        read _ _ _ CHECK_IP _ _ < "$dev_file"
+        if [ -n "$CHECK_IP" ] && [ "$CHECK_IP" != "-" ]; then
+            LOOPBACK_TARGET_IP="$CHECK_IP"
+            log INFO "  Found IP from $dev_file: $LOOPBACK_TARGET_IP"
+            break
+        fi
+    done
+  fi
+  
+  if [ -n "$LOOPBACK_TARGET_IP" ]; then
+    log INFO "  Starting socat proxy: 127.0.0.1:$SSHD_PORT -> $LOOPBACK_TARGET_IP:$SSHD_PORT"
+    
+    # Check if socat is available
+    if command -v socat >/dev/null 2>&1; then
+       # Start socat in background
+       # TCP-LISTEN:22222,bind=127.0.0.1,fork,reuseaddr -> TCP:$VM_IP:22222
+       socat TCP-LISTEN:"$SSHD_PORT",bind=127.0.0.1,fork,reuseaddr TCP:"$LOOPBACK_TARGET_IP":"$SSHD_PORT" >/dev/null 2>&1 &
+       SOCAT_PID=$!
+       log INFO "  socat started (PID: $SOCAT_PID)"
+    elif [ -x "/.runcvm/guest/usr/bin/socat" ]; then
+       # Fallback to bundled socat if not in PATH (e.g. if runcvm-ctr-defaults didnt alias it correctly yet?)
+       # Note: We rely on alias or absolute path.
+       /.runcvm/guest/usr/bin/socat TCP-LISTEN:"$SSHD_PORT",bind=127.0.0.1,fork,reuseaddr TCP:"$LOOPBACK_TARGET_IP":"$SSHD_PORT" >/dev/null 2>&1 &
+       SOCAT_PID=$!
+       log INFO "  socat started (PID: $SOCAT_PID) via absolute path"
+    else
+       log INFO "  Warning: socat not found, loopback connection strategy might fail"
+    fi
+  else
+    log INFO "  Warning: Could not determine VM IP for loopback proxy"
+  fi
   # FORCE ENABLE vsock for debugging - always add the vsock device
   local vsock_config=',"vsock":{"guest_cid":3,"uds_path":"/run/firecracker.vsock"}'
   log "  vsock: FORCE ENABLED (debugging)"
@@ -1811,10 +1944,10 @@ fi # End Cache Miss/No Cache logic
 CFGEOF
 
   # ALWAYS show Firecracker config for debugging vsock issue
-  log "=== FIRECRACKER CONFIG (checking vsock) ==="
+  log INFO "=== FIRECRACKER CONFIG (checking vsock) ==="
   busybox cat "$FIRECRACKER_CONFIG" | while read line; do log "  $line"; done
-  log "=== END FIRECRACKER CONFIG ==="
-  
+  log INFO "=== END FIRECRACKER CONFIG ==="
+
   # Verify vsock is in config
   if busybox grep -q "vsock-device" "$FIRECRACKER_CONFIG"; then
     log "✓ vsock-device is PRESENT in Firecracker config"

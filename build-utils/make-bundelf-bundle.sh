@@ -113,7 +113,7 @@ copy_binaries() {
 
     if [ -n "$file" ]; then
       if [ -z "$BUNDELF_MERGE_BINDIRS" ]; then
-        tar cv $file 2>/dev/null | tar x -C $BUNDELF_CODE_PATH/
+        tar chv $file 2>/dev/null | tar x -C $BUNDELF_CODE_PATH/
         echo "$BUNDELF_CODE_PATH$file"
       else
         cp -p $file $BUNDELF_CODE_PATH/bin/
