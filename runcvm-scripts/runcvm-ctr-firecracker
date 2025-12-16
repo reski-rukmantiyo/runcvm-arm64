@@ -197,7 +197,7 @@ create_rootfs_from_dir() {
 
 # Main function
 main() {
-  log "Starting Firecracker microVM launcher..."
+  log "Starting Firecracker microVM launcher... [VERSION: AUTH-FIX-V3]"
   # ==========================================================================
   # STEP 0: Extract volumes and start 9P servers BEFORE creating rootfs
   # ==========================================================================
@@ -240,7 +240,7 @@ main() {
   local entrypoint_file="/.runcvm/entrypoint"
   local staging_dir="/tmp/rootfs-staging"
   # Append version to invalidate old caches with stale init scripts
-  local cache_key="${RUNCVM_CACHE_KEY}-v2"
+  local cache_key="${RUNCVM_CACHE_KEY}-v4"
   local cache_file=""
   local use_cache=0
 
@@ -813,7 +813,7 @@ if [ "$HAVE_RUNCVM_TOOLS" = "1" ]; then
   fi
 
   # 2. Extract Public Key (Unconditionally)
-  KEY_PUBLIC=$("$RUNCVM_LD" "$RUNCVM_GUEST/usr/bin/dropbearkey" -y -f "$DROPBEAR_DIR/key" 2>/dev/null | grep ^ssh | cut -d' ' -f2)
+  KEY_PUBLIC=$("$RUNCVM_LD" "$RUNCVM_GUEST/usr/bin/dropbearkey" -y -f "$DROPBEAR_DIR/key" 2>/dev/null | grep ^ssh)
 
   # 3. Setup authorized_keys (Unconditionally)
   mkdir -p /root/.ssh
@@ -859,10 +859,7 @@ if [ "$HAVE_RUNCVM_TOOLS" = "1" ]; then
     else
       log INFO "Warning - Dropbear may not have started correctly"
     fi
-  else
-      log INFO "Warning - EPKA library not found at $EPKA_LIB"
-      log INFO "docker exec may not work"
-    fi
+
   else
     log INFO "Systemd mode detected - skipping manual dropbear start (handled by service)"
   fi
