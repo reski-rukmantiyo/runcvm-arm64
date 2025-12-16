@@ -901,14 +901,16 @@ fi
 # 1. RUNCVM_SYSTEMD=1 env var
 # 2. image has systemd installed (and we decide to auto-enable? No, safer to require flag for now or just check if entrypoint is empty/default)
 
-echo "RunCVM-FC init: Checking for Systemd..."
-echo "RunCVM-FC init:   Detailed check:"
-ls -la /usr/lib/systemd/systemd 2>/dev/null || echo "  /usr/lib/systemd/systemd not found"
-ls -la /lib/systemd/systemd 2>/dev/null || echo "  /lib/systemd/systemd not found"
-ls -la /sbin/init 2>/dev/null || echo "  /sbin/init not found"
-echo "  PATH=$PATH"
-echo "RunCVM-FC init:   SYSTEMD_BIN='$SYSTEMD_BIN'"
-echo "RunCVM-FC init:   RUNCVM_SYSTEMD='$RUNCVM_SYSTEMD'"
+if is_debug; then
+  log DEBUG "Checking for Systemd..."
+  log DEBUG "  Detailed check:"
+  ls -la /usr/lib/systemd/systemd 2>/dev/null || log DEBUG "  /usr/lib/systemd/systemd not found"
+  ls -la /lib/systemd/systemd 2>/dev/null || log DEBUG "  /lib/systemd/systemd not found"
+  ls -la /sbin/init 2>/dev/null || log DEBUG "  /sbin/init not found"
+  log DEBUG "  PATH=$PATH"
+  log DEBUG "  SYSTEMD_BIN='$SYSTEMD_BIN'"
+  log DEBUG "  RUNCVM_SYSTEMD='$RUNCVM_SYSTEMD'"
+fi
 
 SHOULD_RUN_SYSTEMD=0
 if [ "$RUNCVM_SYSTEMD" = "1" ] || [ "$RUNCVM_SYSTEMD" = "true" ]; then
@@ -918,7 +920,9 @@ elif [ -n "$SYSTEMD_BIN" ] && [ ! -f /.runcvm-entrypoint ]; then
   # Let's stick to explicit flag for now to avoid breaking existing generic containers
   :
 fi
-echo "RunCVM-FC init:   SHOULD_RUN_SYSTEMD='$SHOULD_RUN_SYSTEMD'"
+if is_debug; then
+  log DEBUG "  SHOULD_RUN_SYSTEMD='$SHOULD_RUN_SYSTEMD'"
+fi
 
 if [ "$SHOULD_RUN_SYSTEMD" = "1" ] && [ -n "$SYSTEMD_BIN" ]; then
    echo "RunCVM-FC init: Booting with Systemd ($SYSTEMD_BIN)..."
@@ -1660,6 +1664,13 @@ fi # End Cache Miss/No Cache logic
             # Also flush from the slave interface (Docker might put it there)
             ip addr del "$DOCKER_IF_IP/$net_prefix" dev "$DOCKER_IF" 2>/dev/null || true
             ip addr del "$DOCKER_IF_IP/32" dev "$DOCKER_IF" 2>/dev/null || true
+            
+            # Restore Default Route (lost when flushing IPs)
+            # This ensures the container namespace (host side) has internet access via the bridge
+            if [ -n "$DOCKER_IF_IP_GW" ]; then
+                log "    Restoring default route via $DOCKER_IF_IP_GW dev $bridge_name"
+                ip route add default via "$DOCKER_IF_IP_GW" dev "$bridge_name" 2>/dev/null || true
+            fi
         else
             log "    ERROR: Failed to add alias (Exit $?)"
         fi
