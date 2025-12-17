@@ -2033,7 +2033,7 @@ fi # End Cache Miss/No Cache logic
   # deflate_on_oom: true allows the guest to reclaim memory if it runs out
   # stats_polling_interval_s: 1 enables memory stats reporting
   local balloon_config=""
-  if [ "${RUNCVM_ENABLE_BALLOON:-false}" = "true" ]; then
+  if [ "${RUNCVM_ENABLE_BALLOON:-true}" = "true" ]; then
     local balloon_size="${RUNCVM_BALLOON_SIZE_MIB:-0}"
     log "  Memory Ballooning: ENABLED (Size: ${balloon_size}MiB)"
     balloon_config=',"balloon":{"amount_mib":'$balloon_size',"deflate_on_oom":true,"stats_polling_interval_s":1}'
@@ -2101,7 +2101,8 @@ CFGEOF
     fc_error_log="/tmp/firecracker-error-$$.log"
     
     # Run Firecracker: stdout -> terminal (interactive), stderr -> log file
-    "$FIRECRACKER_BIN" --no-api --config-file "$FIRECRACKER_CONFIG" 2> "$fc_error_log"
+    # API Socket: /.runcvm/sockets/firecracker.socket (exposed to host)
+    "$FIRECRACKER_BIN" --api-sock "/.runcvm/sockets/firecracker.socket" --config-file "$FIRECRACKER_CONFIG" 2> "$fc_error_log"
   fi
   
   local exit_code=$?

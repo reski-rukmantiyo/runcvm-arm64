@@ -327,6 +327,12 @@ if [ "$COMMAND" = "create" ]; then
   
   # Store ID for cleanup handler (in case of SIGTERM/SIGINT)
   CLEANUP_CONTAINER_ID="$ID"
+  
+  # SETUP SOCKET DIRECTORY FOR API
+  # This allows host to communicate with Firecracker inside container
+  RUNCVM_SOCKET_DIR="/var/lib/runcvm/sockets/$ID"
+  mkdir -p "$RUNCVM_SOCKET_DIR"
+  chmod 700 "$RUNCVM_SOCKET_DIR"
 
   CFG="$BUNDLE/config.json"
   ROOT=$(jq -r .root.path $CFG)
@@ -614,6 +620,10 @@ if [ "$COMMAND" = "create" ]; then
   # Define this at bottom of mounts[] so it is not recursively mounted to /vm
   jq_set "$CFG" '.mounts += [{"destination":"/run","type":"tmpfs","source":"run","options":["nosuid","noexec","nodev","size=1M","mode=700"]}]'
 
+  # Mount the API socket directory
+  # Provide write access to container so Firecracker can create the socket
+  jq_set "$CFG" --arg host "$RUNCVM_SOCKET_DIR" '.mounts += [{"destination":"/.runcvm/sockets","type":"bind","source":$host,"options":["bind","private","rw"]}]'
+
   # DETERMINE LAUNCH KERNEL:
   #
   # 1. If RUNCVM_KERNEL specified:
@@ -777,6 +787,9 @@ if [ "$COMMAND" = "create" ]; then
   fi
   log "RUNCVM_MEM_SIZE=${RUNCVM_MEM_SIZE}M"
   set_config_env "RUNCVM_MEM_SIZE" "${RUNCVM_MEM_SIZE}M"
+  
+  # Save BOOT memory size to state file for later balloon calculations
+  echo "$RUNCVM_MEM_SIZE" > "$RUNCVM_SOCKET_DIR/boot_memory_mb"
 
   RUNCVM_HUGETLB=$(get_config_env "RUNCVM_HUGETLB")
   if [ "$RUNCVM_HUGETLB" != "1" ]; then
@@ -913,6 +926,171 @@ elif [ "$COMMAND" = "delete" ]; then
       log "WARNING: runcvm-nfsd not found at /opt/runcvm/scripts/runcvm-nfsd"
     fi
   fi
+  
+elif [ "$COMMAND" = "update" ]; then
+
+  log_debug "Command: update"
+  
+  # USAGE:
+  #   runc update [command options] <container-id>
+  #
+  # PARSE 'update' COMMAND OPTIONS
+  # ...
+  
+  # DEBUG: Log all arguments unconditionally if runtime.log exists
+  if [ -f "/opt/runcvm/runtime.log" ]; then
+    echo "UPDATE CMD: $0 ${COMMAND_LINE[@]}" >> /opt/runcvm/runtime.log
+  fi
+
+  # We need to capture memory argument to perform ballooning
+  UPDATE_MEMORY_BYTES=""
+  
+  # Parse args to find memory update
+  # We iterate over args but we must NOT shift them away permanently
+  ARGS=("${COMMAND_LINE[@]}")
+  
+  # Iterate starting from index 1 (skipping $0)
+  for ((i=1; i<${#ARGS[@]}; i++)); do
+      arg="${ARGS[$i]}"
+      case "$arg" in
+          --memory|-m) 
+              # Next arg is the value
+              next_idx=$((i+1))
+              UPDATE_MEMORY_BYTES="${ARGS[$next_idx]}"
+              ;;
+          --memory=*)
+              UPDATE_MEMORY_BYTES="${arg#*=}"
+              ;;
+          --resources|-r)
+              # Read resources from JSON file
+              next_idx=$((i+1))
+              RES_FILE="${ARGS[$next_idx]}"
+              
+              # Handle stdin input ('-')
+              # Docker passes resources via stdin using '-'
+              if [ "$RES_FILE" = "-" ]; then
+                  TMP_RES_FILE="/tmp/runcvm-resources-$$.json"
+                  # Capture stdin to file
+                  cat > "$TMP_RES_FILE"
+                  
+                  # Update our local variable to point to the file
+                  RES_FILE="$TMP_RES_FILE"
+                  
+                  # Rewrite COMMAND_LINE to use the file instead of '-'
+                  # We need to find the index in COMMAND_LINE array matching next_idx
+                  # Note: ARGS is a copy, so indices might match if we didn't shift.
+                  # COMMAND_LINE includes $0 (runcvm-runtime) at index 0?
+                  # Yes, COMMAND_LINE=("$@"). And in loop we started at 1.
+                  # So COMMAND_LINE[$next_idx] should be '-'.
+                  # Let's verify and replace.
+                  # Warning: COMMAND_LINE indices are 0-based. ARGS logic used copy.
+                  
+                  # Safer: just iterate and replace first occurrence of '-' after --resources?
+                  # Actually, we can just assume the indices line up since ARGS was a direct copy.
+                  # COMMAND_LINE is 0-indexed array of arguments.
+                  # Original loop: for ((i=1; ... ARGS=$@ (basically)
+                  # So ARGS[i] corresponds to COMMAND_LINE[i-1] ?? 
+                  # No, COMMAND_LINE=("$@"). $1 is index 0.
+                  # So ARGS[1] ($1) is COMMAND_LINE[0].
+                  
+                  # Let's fix the loop to iterate properly over indices of COMMAND_LINE
+                  # or just replace the value in COMMAND_LINE using the same index.
+                  # "for ((i=1; i<${#ARGS[@]}; i++))" iterates 1..N.
+                  # COMMAND_LINE has indices 0..N-1.
+                  # So ARGS[i] == COMMAND_LINE[i-1].
+                  
+                  CMD_IDX=$(( i )) # Wait, if ARGS=("${COMMAND_LINE[@]}"), it's an exact copy.
+                  # So ARGS[0] is COMMAND_LINE[0].
+                  
+                  # Wait, line 285: COMMAND_LINE=("$@")
+                  # line 959: ARGS=("${COMMAND_LINE[@]}")
+                  # So indices match exactly.
+                  
+                  COMMAND_LINE[$next_idx]="$TMP_RES_FILE"
+                  log_debug "Rewrote --resources - to $TMP_RES_FILE"
+              fi
+
+              if [ -f "$RES_FILE" ]; then
+                  # Extract memory.limit from JSON (if present)
+                  # Structure: { "memory": { "limit": <bytes>, ... }, ... }
+                  # or OCI spec: linux.resources.memory.limit
+                  # runc expects a specialized format or OCI? Docker passes OCI LinuxResources struct usually.
+                  # Let's inspect the file content in debug log
+                  if [ -f "/opt/runcvm/runtime.log" ]; then
+                     echo "RESOURCES FILE ($RES_FILE):" >> /opt/runcvm/runtime.log
+                     cat "$RES_FILE" >> /opt/runcvm/runtime.log
+                  fi
+                  
+                  # Try to parse limit using jq_get
+                  # Note: runc update resources file is usually just the LinuxResources object
+                  LIMIT=$(jq_get "$RES_FILE" '.memory.limit')
+                  if [ -n "$LIMIT" ] && [ "$LIMIT" != "null" ] && [ "$LIMIT" != "0" ]; then
+                      UPDATE_MEMORY_BYTES="$LIMIT"
+                  fi
+              fi
+              ;;
+      esac
+  done
+  
+  # Get Container ID (last argument usually)
+  
+  # Get Container ID (last argument usually)
+  ID="${ARGS[${#ARGS[@]}-1]}"
+  
+  if [ -n "$UPDATE_MEMORY_BYTES" ] && [ -n "$ID" ]; then
+      # Calculate balloon size
+      # 1. Get Boot Memory Size
+      RUNCVM_SOCKET_DIR="/var/lib/runcvm/sockets/$ID"
+      BOOT_MEM_FILE="$RUNCVM_SOCKET_DIR/boot_memory_mb"
+      
+      if [ -f "$BOOT_MEM_FILE" ]; then
+          BOOT_MEM_MB=$(cat "$BOOT_MEM_FILE")
+          
+          # Convert update bytes to MB
+          TARGET_MEM_MB=$(( UPDATE_MEMORY_BYTES / 1024 / 1024 ))
+          
+          # Firecracker Balloon Logic:
+          # amount_mib = size of the BALLOON (memory taken AWAY from guest)
+          # Balloon Size = Boot Size - Target Size
+          
+          # If Target > Boot, we cannot add memory. Balloon size = 0?
+          # Actually checking docs: "amount_mib": Integer. Target balloon size in MiB.
+          
+          if [ "$TARGET_MEM_MB" -ge "$BOOT_MEM_MB" ]; then
+              # User requested more memory than boot size.
+              # Best we can do is deflate balloon completely (return to full boot memory).
+              BALLOON_SIZE_MB=0
+              log "UPDATE: Memory $TARGET_MEM_MB MB >= Boot $BOOT_MEM_MB MB. Deflating balloon to 0 (Max)."
+          else
+              BALLOON_SIZE_MB=$(( BOOT_MEM_MB - TARGET_MEM_MB ))
+              log "UPDATE: Resizing memory to $TARGET_MEM_MB MB (Boot: $BOOT_MEM_MB MB). Setting balloon to $BALLOON_SIZE_MB MB."
+          fi
+          
+          # Call Firecracker API via curl
+          # Socket: $RUNCVM_SOCKET_DIR/firecracker.socket
+          # API: PUT /balloon
+          # Body: { "amount_mib": <size>, "stats_polling_interval_s": 1 }
+          
+          SOCKET_PATH="$RUNCVM_SOCKET_DIR/firecracker.socket"
+          
+          if [ -S "$SOCKET_PATH" ]; then
+              log_debug "Calling Firecracker API: PUT /balloon (amount_mib: $BALLOON_SIZE_MB)"
+              
+              if command -v curl >/dev/null 2>&1; then
+                   curl --unix-socket "$SOCKET_PATH" -X PATCH "http://localhost/balloon" \
+                        -H "Accept: application/json" \
+                        -H "Content-Type: application/json" \
+                        -d "{ \"amount_mib\": $BALLOON_SIZE_MB }" \
+                        >> /opt/runcvm/runtime.log 2>&1 || log_error "Failed to call Firecracker API"
+              else
+                   log_error "curl not found, cannot update Firecracker balloon"
+              fi
+          else
+             log "WARNING: Firecracker socket not found at $SOCKET_PATH. Is the VM running with API enabled?"
+          fi
+      fi
+  fi
+  
 fi
 
 log_debug "--- LOG ENDS ---"
