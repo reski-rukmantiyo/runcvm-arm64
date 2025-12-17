@@ -501,6 +501,10 @@ In the below summary of RunCVM's current main features and limitations, [+] is u
 - `docker exec`
    - [+] `--user` (or `-u`), `--workdir` (or `-w`), `--env` (or `-e`), `--env-file`, `--detach` (or `-d`), `--interactive` (or `-i`) and `--tty` (or `-t`) are all supported
    - [+] Stdout and Stderr _are_ independently multiplexed so `docker exec <container> bash -c 'echo stdout; echo stderr >&2' >/tmp/stdout 2>/tmp/stderr` _does_ produce the expected result
+- `docker update`
+   - [+] `--memory` (or `-m`) is supported to dynamically reduce VM memory usage via ballooning (cannot increase beyond boot size)
+   - [+] `--cpus` is supported to dynamically throttle the VMM process on the host
+   - [-] Other update options are unsupported
 - Security
    - The RunCVM software package at `/opt/runcvm` is mounted read-only within RunCVM containers. Container applications cannot compromise RunCVM, but they can execute binaries from within the RunCVM package. The set of binaries available to the VM may be reduced to a minimum in a later version.
 - Kernels

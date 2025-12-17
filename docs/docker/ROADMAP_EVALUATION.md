@@ -110,6 +110,17 @@
 
 ---
 
+### 10. Docker Update
+*   **Status**: ✅ Complete (Rank 4 Solved!)
+*   **Difficulty**: 4/5
+*   **Analysis**:
+    *   **Achieved**: Dynamic memory resizing via Firecracker Ballooning API.
+    *   **Mechanism**: `runcvm-runtime` intercepts `update` command, calculates balloon size (Boot - Target), and calls `PATCH /balloon` on Firecracker API socket.
+    *   **Constraints**: Can only *reduce* memory from boot size (deflate balloon). Increasing beyond boot size is not possible. Balloon driver consumes "Used" memory to apply pressure.
+    *   **CPU**: Handled via host Cgroups (throttling VMM thread), which effectively limits guest compute power.
+
+---
+
 ## Summary Implementation Plan
 
 1.  **Quick Wins (Rank 2)**:
