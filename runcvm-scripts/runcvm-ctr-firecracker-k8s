@@ -118,12 +118,13 @@ main() {
   local entrypoint_file="/.runcvm/entrypoint"
   local staging_dir="/tmp/rootfs-staging"
   # Append version to invalidate old caches with stale init scripts
-  local cache_key="${RUNCVM_CACHE_KEY}-v4"
+  local cache_key="${RUNCVM_CACHE_KEY}-v7"
   local cache_file=""
   local use_cache=0
 
   # Check if caching is globally enabled via env var (Default: 1/true)
-  local cache_active="${ROOTFS_CACHE_ACTIVE:-1}"
+  # DEBUGGING: Force cache OFF to ensure fresh builds
+  local cache_active="0"
   
   if [ "$cache_active" = "1" ] || [ "$cache_active" = "true" ]; then
       if [ -n "$cache_key" ] && [ -d "/.runcvm/cache" ]; then
@@ -313,12 +314,9 @@ main() {
    local init_script="${staging_dir}/init"
    generate_init_script "$init_script"
 
-   # KUBERNETES OVERRIDE: Use K8s-specific init script
-  log "  [K8s] Content of init before patch:"
-  grep "runcvm-vm-init" "$init_script" || log "  [K8s] String not found!"
-  busybox sed -i 's/runcvm-vm-init/runcvm-vm-init-k8s/g' "$init_script"
-  log "  [K8s] Content of init after patch:"
-  grep "runcvm-vm-init" "$init_script" || true
+
+   # K8s uses same generated init as Docker - network from /.runcvm-network-eth0
+  
   
   # Save the original entrypoint if we have it
   if [ -f "$entrypoint_file" ]; then

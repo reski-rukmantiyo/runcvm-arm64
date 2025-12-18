@@ -1,5 +1,11 @@
 
+
 set -x
+
+# CRITICAL DEBUG: Prove this script is being called
+echo "========================================" > /dev/console
+echo "K8S VM-INIT STARTING NOW!" > /dev/console
+echo "========================================" > /dev/console
 
 # DEBUG TIMING
 debug_time() {
@@ -228,7 +234,9 @@ else
   $RUNCVM/scripts/runcvm-vm-qemu-ga &>/dev/null &
 
   # Run dropbear SSH server, needed to support 'docker exec'
+  echo "[GUEST-INIT] Starting dropbear on port $SSHD_PORT..." > /dev/console
   dropbear -REF -p $SSHD_PORT -A $RUNCVM_GUEST/tmp/dropbear/libepka_file.so,/.runcvm/dropbear/epka.json -P /.runcvm/dropbear/dropbear.pid &>/dev/null &
+  echo "[GUEST-INIT] Dropbear started (PID: $!)" > /dev/console
 
   # Run init from the image
   # Pipe input/output from/to console device

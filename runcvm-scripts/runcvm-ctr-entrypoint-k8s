@@ -82,17 +82,18 @@ setup_kubernetes_bridge() {
   
   log_info "Pod Network: IP=$IF_IP/$IF_PREFIX GW=$GW_IP MAC=$IF_MAC MTU=$IF_MTU"
   
-  # Save configuration for VM
-  # We want the VM to have this exact IP configuration.
-  # So we will bridge eth0 to a bridge (br0) and attach the TAP to br0.
   
-  # 1. Save config for VM
-  printf "%s %s %s %s %s %s\n" \
-      "$POD_IF" "$IF_MAC" "$IF_MTU" "$IF_IP" "$IF_PREFIX" "$GW_IP" \
-      >/.runcvm/network/devices/$POD_IF
-  ln -s "$POD_IF" /.runcvm/network/devices/default
+  # Save configuration for VM in format expected by firecracker-init.sh
+  # Init script sources /.runcvm-network-eth0 expecting FC_* variables
+  cat > /.runcvm-network-eth0 << EOF
+FC_IP="$IF_IP"
+FC_PREFIX="$IF_PREFIX"
+FC_GW="$GW_IP"
+FC_MTU="$IF_MTU"
+FC_MAC="$IF_MAC"
+EOF
   
-  # (Bridge setup deferred to implementation block below)
+  log_info "Created network config: IP=$IF_IP/$IF_PREFIX GW=$GW_IP"
 
   
   # 3. Restore Route
