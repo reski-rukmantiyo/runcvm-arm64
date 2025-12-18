@@ -1,3 +1,6 @@
+#!/opt/runcvm/lib/ld-musl-aarch64.so.1 /opt/runcvm/bin/bash
+
+# REFERENCES
 
 # Virtiofs
 # - https://vmsplice.net/~stefan/virtio-fs_%20A%20Shared%20File%20System%20for%20Virtual%20Machines.pdf

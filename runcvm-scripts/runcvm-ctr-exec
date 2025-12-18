@@ -114,7 +114,7 @@ fi
 # Verify connectivity before connecting
 # This avoids "Host is unreachable" errors if the VM isn't fully ready or ARP is converging
 if [ -n "$VM_CHECK_IP" ] && [ "$VM_CHECK_IP" != "-" ]; then
-   if [ "$RUNCVM_LOG_LEVEL" = "DEBUG" ]; then echo "Waiting for VM ($VM_CHECK_IP)..." >&2; fi
+   log_debug "Waiting for VM ($VM_CHECK_IP)..."
    
    # Wait for VM to answer ping (up to 5 seconds)
    # We need the VM to be reachable via the bridge for socat to work
@@ -141,9 +141,10 @@ else
 fi
 
 # Debug client key
-if [ "$RUNCVM_LOG_LEVEL" = "DEBUG" ]; then
-  echo "DEBUG: Client Key Check:" >&2
-  ls -l /.runcvm/dropbear/key >&2
+# Verify client key permissions
+if [ "$CURRENT_LOG_LEVEL" -le "${LOG_LEVELS[DEBUG]}" ]; then
+  log_debug "Client Key Check:"
+  ls -la /.runcvm/dropbear/key >&2
 fi
 
 # Finally, execute the command via SSH
