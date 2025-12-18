@@ -1,0 +1,252 @@
+#!/.runcvm/guest/bin/bash -e
+
+# Add RunCVM guest tools to PATH
+export PATH="$PATH:/.runcvm/guest/bin:/.runcvm/guest/sbin:/.runcvm/guest/usr/bin:/.runcvm/guest/usr/sbin"
+
+# Define helpers
+RUNCVM_GUEST="/.runcvm/guest"
+RUNCVM_LD="$RUNCVM_GUEST/lib/ld"
+
+# Wrapped iptables if system one missing
+if ! command -v iptables >/dev/null 2>&1; then
+  if [ -x "$RUNCVM_GUEST/bin/xtables-nft-multi" ]; then
+    iptables() {
+      "$RUNCVM_LD" "$RUNCVM_GUEST/bin/xtables-nft-multi" iptables "$@"
+    }
+  fi
+fi
+
+# DEBUG
+if [[ "$RUNCVM_BREAK" =~ (prenet|postnet) ]]; then set -x; fi
+
+
+# SAVE ENTRYPOINT
+args=("$@")
+printf "%s\n" "${args[@]}" >/.runcvm/entrypoint
+
+# SET HOME ENV VAR IF NEEDED
+# (Same logic as Docker for HOME handling in case it's not set)
+if [ "$RUNCVM_HAS_HOME" == "0" ]; then
+  HOME=$($RUNCVM_GUEST/usr/bin/getent passwd "${RUNCVM_UIDGID%%:*}" | $RUNCVM_GUEST/bin/cut -d':' -f6)
+fi
+
+if [ -z "$RUNCVM_CPUS" ] || [ "$RUNCVM_CPUS" -le 0 ]; then
+  RUNCVM_CPUS=$($RUNCVM_GUEST/bin/busybox nproc)
+fi
+
+# SAVE ENVIRONMENT
+export -n SHLVL OLDPWD
+export >/.runcvm/config
+
+# FIX: Explicitly enforce RUNCVM_LOG_LEVEL in config to avoid export ambiguities
+sed -i '/RUNCVM_LOG_LEVEL=/d' /.runcvm/config
+echo "declare -x RUNCVM_LOG_LEVEL=\"${RUNCVM_LOG_LEVEL:-OFF}\"" >> /.runcvm/config
+
+# NOW LOAD DEFAULT ENV AND PATH
+. $RUNCVM_GUEST/scripts/runcvm-ctr-defaults
+
+# LOAD IP MANIPULATION FUNCTIONS
+. $RUNCVM_GUEST/scripts/runcvm-ip-functions
+
+# SAVE PWD
+busybox pwd >/.runcvm/pwd
+
+# DEBUG
+if [[ "$RUNCVM_BREAK" =~ prenet ]]; then bash; fi
+
+# ============================================================
+# KUBERNETES BRIDGE NETWORKING
+# ============================================================
+setup_kubernetes_bridge() {
+  set -x # DEBUG: Trace execution
+  log_info "Setting up Kubernetes bridge networking..."
+  mkdir -p /.runcvm/network/devices
+  
+  # Identify the Pod interface (usually eth0)
+  # In K8s, the Pause container sets up the network namespace.
+  # We should find 'eth0' with the Pod IP.
+  
+  POD_IF="eth0"
+  
+  # Get interface details
+  read -r IF_IP IF_PREFIX IF_MAC IF_MTU < \
+      <(ip -json addr show "$POD_IF" | jq -r '.[0] | [.addr_info[0].local, .addr_info[0].prefixlen, .address, .mtu] | @tsv')
+
+  if [ -z "$IF_IP" ]; then
+     log_error "Could not find IP for $POD_IF. Networking may fail."
+     # Fallback to SLIRP? Or fail?
+  fi
+  
+  # Identify Gateway
+  read -r GW_IP < <(ip -json route show | jq -r '.[] | select(.dst == "default") | .gateway')
+  
+  log_info "Pod Network: IP=$IF_IP/$IF_PREFIX GW=$GW_IP MAC=$IF_MAC MTU=$IF_MTU"
+  
+  # Save configuration for VM
+  # We want the VM to have this exact IP configuration.
+  # So we will bridge eth0 to a bridge (br0) and attach the TAP to br0.
+  
+  # 1. Save config for VM
+  printf "%s %s %s %s %s %s\n" \
+      "$POD_IF" "$IF_MAC" "$IF_MTU" "$IF_IP" "$IF_PREFIX" "$GW_IP" \
+      >/.runcvm/network/devices/$POD_IF
+  ln -s "$POD_IF" /.runcvm/network/devices/default
+  
+  # (Bridge setup deferred to implementation block below)
+
+  
+  # 3. Restore Route
+  # When we moved eth0 to bridge, we lost the IP/Route often.
+  # Wait, if we keep the IP on the bridge, the container (localhost access) works.
+  # But the VM needs to share it?
+  # 
+  # Strategy: "Promiscuous Bridge"
+  # We give the Bridge the Pod IP. 
+  # The VM TAP connects to Bridge.
+  # VM sets STATIC IP (the Pod IP).
+  # Wait, duplicate IP? 
+  # No, we want the VM to BE the Pod IP.
+  # So we remove IP from bridge (or keep it as alias?)
+  #
+  # Standard "Firecracker CNI" approach:
+  # Host (Container) has a TAP.
+  # Host routes traffic to TAP.
+  # VM has Pod IP.
+  # But in K8s, we are INSIDE the Pod network namespace already.
+  # The CNI plugin gave 'eth0' to this namespace.
+  
+  # OPTION A: Bridging (L2)
+  # eth0 (Pod Interface) <---> br0 <---> tap0 (VM)
+  # Traffic comes in eth0, goes to br0, floods to tap0.
+  # VM has the IP.
+  # Bridge has NO IP (or dummy).
+  # BUT: Container processes (like our own launcher) might lose network access if we strip IP from eth0.
+  # We need network access to talk to API server (maybe?).
+  # Actually, launcher just runs firecracker.
+  
+  # Let's go with Bridging.
+  # Move IP from eth0 to br0?
+  # If we move IP to br0, then host (container) traffic works using br0.
+  # VM connects to br0. VM uses SAME IP? Collision.
+  # VM needs its own IP? No, we want Pod IP.
+  
+  # Solution:
+  # Use a private point-to-point link or TAP with Proxy ARP?
+  # Or simply bridge and let VM take the IP?
+  
+  # Let's try:
+  # 1. Create Bridge br0.
+  # 2. Add eth0 to br0.
+  # 3. Create TAP tap0, add to br0.
+  # 4. Flush IP from eth0.
+  # 5. Assign IP to br0? (So container works).
+  # 6. VM also assigns IP? (Collision).
+  
+  # Alternative: TC Redirect (common in Firecracker setups).
+  # eth0 <--> TC <--> tap0
+  
+  # Let's stick to the Docker logic which worked:
+  # It creates a bridge `br-$if`.
+  # It adds `$if` to bridge.
+  # It moves routes to bridge.
+  # It assigns a PRIVATE IP to the bridge (169.254.1.1).
+  # The VM gets the "Real" IP (DOCKER_IF_IP).
+  #
+  # Wait, if VM gets the Real IP, and Bridge has Private IP.
+  # How does traffic get to VM? 
+  # Bridge acts as L2 switch.
+  # Traffic hits eth0 (promiscuous), goes to Bridge, goes to TAP.
+  # VM sees packet for Real IP. Accepts it.
+  #
+  # Does the container (bridge) need the Real IP?
+  # Only if local processes need to talk OUT.
+  # The launcher might need to talk to Metadata service?
+  #
+  # In Docker logic:
+  # "Add a private IP to this bridge. We need it so the bridge can receive traffic."
+  # "Restore default gateway route via this bridge." via DOCKER_GW_IF_IP.
+  #
+  # So:
+  # 1. Flush eth0.
+  # 2. Setup Bridge `br0`.
+  # 3. Add eth0 to br0.
+  # 4. Add Private IP (169.254.1.1) to br0.
+  # 5. Add default route via Gateway (reachable via eth0 on L2).
+  
+  # BUT: If we flush Real IP from the container, the Kubelet health checks (exec probe) might fail if they depend on `localhost` affecting the IP?
+  # Usually Probes use the Pod IP.
+  # If the Container doesn't have the Pod IP (the VM has it), will Probes fail?
+  # Yes, if Kubelet connects to PodIP:Port.
+  # Since VM has PodIP, it should respond.
+  # BUT the TCP connection must traverse the bridge.
+  # Kubelet -> CNI -> veth (host) -> veth (container) -> eth0 -> br0 -> tap0 -> VM.
+  # This should work.
+  
+  # IMPLEMENTATION (Mirroring Docker Logic):
+  
+  ip addr flush dev "$POD_IF"
+  
+  BRIDGE="br-eth0"
+  ip link add "$BRIDGE" type bridge forward_delay 0 ageing 0
+  ip link set dev "$POD_IF" master "$BRIDGE"
+  ip link set dev "$POD_IF" up
+  ip link set dev "$BRIDGE" up
+  
+  # VM gets the Real IP (via init script).
+  # We give the Bridge a dummy IP so we can route LOCALLY if needed.
+  # But wait, if we want to reach the VM from localhost (e.g. `kubectl exec`), we need a route.
+  
+  # Private IP for Bridge
+  BRIDGE_IP="169.254.1.1"
+  ip addr add "$BRIDGE_IP/32" dev "$BRIDGE"
+  
+  # Add Route to Pod Gateway via Bridge
+  # We need to tell kernel that GW_IP is reachable on link.
+  ip route add "$GW_IP/32" dev "$BRIDGE" scope link
+  ip route add default via "$GW_IP" dev "$BRIDGE"
+  
+  # Now, we need the VM (which will have IF_IP) to be reachable.
+  # Since VM is on bridge, it is on L2.
+  # kubectl exec (socat) needs to connect from THIS namespace to Pod IP (on VM)
+  log_info "Adding route to Pod IP ($IF_IP) via bridge..."
+  ip route add "$IF_IP/32" dev "$BRIDGE" scope link
+  
+  log_info "Bridge $BRIDGE configured."
+}
+
+setup_kubernetes_bridge
+
+# DEBUG
+if [[ "$RUNCVM_BREAK" =~ postnet ]]; then bash; fi
+
+# Pre-generate SSH keys
+mkdir -p /.runcvm/dropbear
+if [ ! -f /.runcvm/dropbear/key ]; then
+  $RUNCVM_GUEST/usr/bin/dropbearkey -t ed25519 -f /.runcvm/dropbear/key >/dev/null 2>&1
+  KEY_PUBLIC=$($RUNCVM_GUEST/usr/bin/dropbearkey -y -f /.runcvm/dropbear/key 2>/dev/null | grep ^ssh | cut -d' ' -f2)
+  cat <<_EOE_ >/.runcvm/dropbear/epka.json
+[{"user":"root","keytype":"ssh-ed25519","key":"$KEY_PUBLIC","options":"no-X11-forwarding","comments":""}]
+_EOE_
+  chmod 400 /.runcvm/dropbear/epka.json /.runcvm/dropbear/key
+fi
+
+# ============================================================
+# LAUNCH FIRECRACKER (K8s SPECIFIC)
+# ============================================================
+log_info "Launching Firecracker microVM (Kubernetes Mode)..."
+
+# Copy runtime state to VM mountpoint
+mkdir -p "$RUNCVM_VM_MOUNTPOINT/.runcvm/network"
+mkdir -p "$RUNCVM_VM_MOUNTPOINT/.runcvm/dropbear"
+cp -a /.runcvm/network/. "$RUNCVM_VM_MOUNTPOINT/.runcvm/network/" 2>/dev/null || true
+cp -a /.runcvm/config "$RUNCVM_VM_MOUNTPOINT/.runcvm/" 2>/dev/null || true
+cp -a /.runcvm/entrypoint "$RUNCVM_VM_MOUNTPOINT/.runcvm/" 2>/dev/null || true
+cp -a /.runcvm/pwd "$RUNCVM_VM_MOUNTPOINT/.runcvm/" 2>/dev/null || true
+cp -a /.runcvm/dropbear/. "$RUNCVM_VM_MOUNTPOINT/.runcvm/dropbear/" 2>/dev/null || true
+[ -f /.runcvm/fstab ] && cp -a /.runcvm/fstab "$RUNCVM_VM_MOUNTPOINT/.runcvm/"
+
+# INVOKE K8s FIRECRACKER LAUNCHER
+# Note: changing from runcvm-init to direct exec for better signal handling?
+# No, strict process supervision needed.
+exec $RUNCVM_GUEST/sbin/runcvm-init -c $RUNCVM_GUEST/scripts/runcvm-ctr-firecracker-k8s
+

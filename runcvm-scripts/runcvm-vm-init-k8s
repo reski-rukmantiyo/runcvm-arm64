@@ -1,0 +1,241 @@
+
+set -x
+
+# DEBUG TIMING
+debug_time() {
+  echo "TIMING: $1 at $(cat /proc/uptime | cut -d' ' -f1)s" >> /.runcvm/boot-timing.log
+}
+debug_time "vm-init started"
+
+# Boot timing profiler
+_T() { 
+  local t=$(cat /proc/uptime | cut -d' ' -f1)
+  echo "$t $1" >> /.runcvm/timing.log
+}
+_T "vm-init-start"
+
+# Load original environment
+. /.runcvm/config
+_T "config-loaded"
+
+# Load defaults and aliases
+. $RUNCVM_GUEST/scripts/runcvm-ctr-defaults
+_T "defaults-loaded"
+
+# Alpine initrd doesn't honour command-line rw flag
+mount -o remount,rw /
+_T "mount remount"
+
+# FIXME: Something is making /.runcvm ro, so remount it rw
+# until such time as exit code handling and dropbear key creation
+# obviate the need for this.
+mount -o remount,rw /.runcvm
+_T "mount runc-vm"
+
+# Alpine initrd doesn't configure /dev device permissions and ownership
+# to support non-root users.
+if [ "$(findmnt -rnu -o FSTYPE /dev)" = "devtmpfs" ]; then
+  [ -e /dev/stdin ] || ln -snf /proc/self/fd/0 /dev/stdin
+  [ -e /dev/stdout ] || ln -snf /proc/self/fd/1 /dev/stdout
+  [ -e /dev/stderr ] || ln -snf /proc/self/fd/2 /dev/stderr
+  [ -e /proc/kcore ] && ln -snf /proc/kcore /dev/core
+  [ -h /dev/ptmx ] || ln -snf pts/ptmx /dev/ptmx
+  chmod 666 /dev/null /dev/random /dev/urandom /dev/zero /dev/tty /dev/pts/ptmx
+  chmod 620 /dev/tty[0-9]*
+  chgrp tty /dev/tty*
+fi
+_T "after /dev"
+
+# Unmount /run if it is a tmpfs (not a virtiofs) mounted by the initramfs
+# /run may be populated in the underlying image, and may also be a volume or be bind-mounted,
+# and its contents should be accessible in these cases.
+if [ "$(findmnt -rnu -o FSTYPE /run)" = "tmpfs" ]; then
+  busybox umount -fl /run
+fi
+_T "after tmpfs"
+
+# FIXME: virtiofs mounts aren't always made rw. Remount them all rw (if allowed)
+# $RUNCVM_GUEST/bin/mount -t virtiofs | awk '{print $3}' | xargs -n 1 mount -o remount,rw
+
+# Some systems do not set up /dev/fd. If needed, add it.
+if ! [ -h /dev/fd ]; then
+  ln -s /proc/self/fd /dev/fd
+fi
+_T "after /dev/fd"
+
+# FIXME: This must be run early enough, otherwise other interfaces like docker0 might have started
+IF=$(ls /sys/class/net/ | grep -vE '^(lo|docker)' | head -n 1)
+
+# https://bugzilla.redhat.com/show_bug.cgi?id=501934
+for i in all $IF
+do
+  # /sbin/sysctl -q -w -e net.ipv6.conf.$i.disable_ipv6=1 net.ipv6.conf.$i.autoconf=0 net.ipv6.conf.$i.accept_ra=0
+  sysctl -q -w -e net.ipv6.conf.$i.disable_ipv6=1 net.ipv6.conf.$i.autoconf=0 || true
+done
+_T "after network setup"
+
+# Bring up local interface
+ip link set lo up
+_T "after network up"
+
+# KUBERNETES VM NETWORKING
+# ==============================================================================
+# In Kubernetes mode, we use a single bridge interface.
+# The `eth0` config file contains the IP details.
+
+if [ -f "/.runcvm/network/devices/eth0" ]; then
+  read IF IF_MAC IF_MTU IF_IP IF_PREFIX IF_GW < "/.runcvm/network/devices/eth0"
+  
+  if [ -n "$IF_IP" ]; then
+    _T "configuring eth0"
+    
+    # Check if interface name is different (e.g. ens3 vs eth0)
+    # Firecracker usually gives 'eth0'
+    REAL_IF=$(ls /sys/class/net/ | grep -vE '^(lo|docker)' | head -n 1)
+    
+    if [ "$REAL_IF" != "eth0" ] && [ -n "$REAL_IF" ]; then
+       ip link set "$REAL_IF" down
+       ip link set "$REAL_IF" name eth0
+       ip link set eth0 up
+    else
+       ip link set eth0 up
+    fi
+    
+    # Assign IP
+    ip addr add "$IF_IP/$IF_PREFIX" dev eth0
+    ip link set eth0 mtu "${IF_MTU:-1500}"
+    
+    # Add Gateway
+    if [ -n "$IF_GW" ]; then
+       ip route add "$IF_GW/32" dev eth0 scope link || true
+       ip route add default via "$IF_GW"
+    fi
+    
+    _T "eth0 configured"
+  else
+    echo "Warning: No IP found in /.runcvm/network/devices/eth0"
+  fi
+  
+else
+  echo "Warning: /network/devices/eth0 missing, falling back to DHCP..."
+  udhcpc -i eth0 -n -q 
+fi
+_T "after network setup"
+
+# No complex route files needed - default GW handles it
+
+
+# TODO
+# - bind-mount or overwrite /etc/resolv.conf, /etc/hosts and /etc/hostname?
+
+# Setup hostname
+hostname -F /etc/hostname
+_T "after hostname"
+
+# Mount filesystems defined in /etc/fstab OR as defined in RUNCVM_DISKS
+if [ -f /.runcvm/fstab ]; then
+  busybox modprobe ext4
+  mount -a --fstab /.runcvm/fstab -o X-mount.mkdir
+
+  # Now mount our fstab over /etc/fstab
+  mount --bind /.runcvm/fstab /etc/fstab
+fi
+_T "after disk fstabb"
+
+# Load cgroupfs (if needed/requested):
+# - If entrypoint is systemd-like () then call cgroupfs_mount "${RUNCVM_CGROUPFS:-none}"
+# - Else call cgroupfs_mount "${RUNCVM_CGROUPFS:-hybrid}"
+
+# Load cgroupfs functions first.
+. $RUNCVM_GUEST/scripts/functions/cgroupfs
+_T "after cgrop"
+
+# Load original entrypoint
+mapfile -t ARGS </.runcvm/entrypoint
+_T "after entrypoint"
+
+ARGS_INIT="${ARGS[0]}"
+
+# Check if ARGS_INIT is a symlink and follow it if it is
+if [ -L "$ARGS_INIT" ]; then
+    ARGS_INIT=$(readlink -f "$ARGS_INIT")
+fi
+
+if [[ "$ARGS_INIT" =~ /systemd$ ]]; then
+  cgroupfs_mount "${RUNCVM_CGROUPFS:-none}"
+else
+  cgroupfs_mount "${RUNCVM_CGROUPFS:-hybrid}"
+fi
+_T "after systemd"
+
+# Make directory for dropbear host keys and public/private keypair
+mkdir -p /.runcvm/dropbear
+
+# Only generate if not pre-generated
+if [ ! -f /.runcvm/dropbear/key ]; then
+  # Create dropbear RSA public/private key pair
+  KEY_PUBLIC=$(dropbearkey -t ed25519 -f /.runcvm/dropbear/key 2>/dev/null | grep ^ssh | cut -d' ' -f2)
+
+  # Create json for dropbear EPKA module
+  cat <<_EOE_ >/.runcvm/dropbear/epka.json && chmod 400 /.runcvm/dropbear/epka.json
+[
+    {
+        "user": "root",
+        "keytype": "ssh-ed25519",
+        "key": "$KEY_PUBLIC",
+        "options":"no-X11-forwarding",
+        "comments": ""
+    }
+]
+_EOE_
+fi
+_T "after key ssh"
+
+# Load choice of console device
+read -r CONSOLE_DEVICE </.runcvm/console
+_T "after console"
+
+# Rename /.dockerenv, because presence of this file leads to systemd-detect-virt detecting presence of a container,
+# which in-turn prevents loading certain units (like systemd-modules-load.service), that
+# specify 'ConditionVirtualization=!container'
+[ -f "/.dockerenv" ] && mv /.dockerenv /.dockerenv.runcvm
+_T "after docker env"
+
+if [ "$RUNCVM_INIT" = "1" ]; then
+  # If launched with '--init' (or --env=RUNCVM_INIT=1) then run our own init in place of Docker's/Podman's.
+
+  cat >/etc/inittab <<_EOE_
+$CONSOLE_DEVICE::respawn:-$RUNCVM_GUEST/scripts/runcvm-vm-start-wrapper
+null::respawn:$RUNCVM_GUEST/scripts/runcvm-vm-qemu-ga
+null::respawn:$RUNCVM_GUEST/usr/sbin/dropbear -REF -p $SSHD_PORT -A $RUNCVM_GUEST/tmp/dropbear/libepka_file.so,/.runcvm/dropbear/epka.json -P /.runcvm/dropbear/dropbear.pid
+null::ctrlaltdel:$RUNCVM_GUEST/bin/poweroff
+null::restart:$RUNCVM_GUEST/bin/poweroff
+null::shutdown:$RUNCVM_GUEST/bin/poweroff
+_EOE_
+
+  # Allow runcvm-vm-start to run once (and only once)
+  rm -f /.runcvm/once
+
+  # Clear the environment, and run our own init, disconnecting stdout and stderr from terminal
+  exec -c $RUNCVM_GUEST/bin/init &>/dev/null
+else
+  # If not, assume the user knows what they're doing: launch qemu-ga and just run their entrypoint.
+
+  # Clean RUNCVM env vars
+  clean_env
+
+  # Run the qemu guest agent, needed to support future functionality
+  $RUNCVM/scripts/runcvm-vm-qemu-ga &>/dev/null &
+
+  # Run dropbear SSH server, needed to support 'docker exec'
+  dropbear -REF -p $SSHD_PORT -A $RUNCVM_GUEST/tmp/dropbear/libepka_file.so,/.runcvm/dropbear/epka.json -P /.runcvm/dropbear/dropbear.pid &>/dev/null &
+
+  # Run init from the image
+  # Pipe input/output from/to console device
+  exec </dev/$CONSOLE_DEVICE &>/dev/$CONSOLE_DEVICE
+  
+  # Invoke runcvm-init with --no-fork purely to create controlling tty,
+  # then exec runcvm-vm-start
+  exec -c $RUNCVM_GUEST/sbin/runcvm-init --no-fork $RUNCVM_GUEST/scripts/runcvm-vm-start
+fi
+_T "after init"

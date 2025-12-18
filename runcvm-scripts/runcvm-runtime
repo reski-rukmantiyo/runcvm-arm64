@@ -1,5 +1,12 @@
 #!/opt/runcvm/lib/ld-musl-aarch64.so.1 /opt/runcvm/bin/bash
 
+# DEBUG: Global Log Redirect
+exec >>/var/log/runcvm.debug 2>&1
+set -x
+echo "=========================================="
+echo "RunCVM Runtime invoked at $(date)"
+echo "ARGS: $@"
+
 # DIAGNOSTIC: Dump environment to check for RUNCVM_LOG_LEVEL leakage
 env | grep RUNCVM > /tmp/runcvm-env-leak.log || true
 
@@ -140,8 +147,12 @@ log_debug "Command line: $0 ${COMMAND_LINE[@]@Q}"
 
 while true
 do
+  echo "DEBUG_ARG: '$1'"
+  echo -n "$1" | od -t c -t x1
+  if [ "$1" = "--systemd-cgroup" ]; then shift; continue; fi
   case "$1" in
-    --debug|--systemd-cgroup) shift; continue; ;;
+    --debug) shift; continue; ;;
+    --systemd-cgroup) shift; continue; ;;
     --log|--log-format|--root|--criu|--rootless) shift; shift; continue; ;;
     --log=*|--log-format=*|--root=*|--criu=*|--rootless=*) shift; continue; ;;
     *) break; ;;
@@ -212,6 +223,26 @@ if [ "$COMMAND" = "create" ]; then
   fi
   # ============================================================
   
+  # ============================================================
+  # KUBERNETES WORKLOAD DETECTION
+  # Check if this is a Kubernetes workload (not sandbox)
+  # ============================================================
+  IS_K8S=0
+  if [ -n "$(get_config_env KUBERNETES_SERVICE_HOST)" ]; then
+     IS_K8S=1
+     log "Kubernetes workload detected (KUBERNETES_SERVICE_HOST)"
+  elif jq_get "$CFG" '.annotations["io.kubernetes.cri.container-type"]' 2>/dev/null | grep -q "container"; then
+     IS_K8S=1
+     log "Kubernetes workload detected (CRI annotation)"
+  fi
+  
+  if [ "$IS_K8S" = "1" ]; then
+     RUNCVM_ENTRYPOINT="$RUNCVM_GUEST/scripts/runcvm-ctr-entrypoint-k8s"
+     export RUNCVM_NETWORK_MODE="kubernetes" 
+     # We export this so it might be picked up, but better to set in config env later
+     set_config_env "RUNCVM_NETWORK_MODE" "kubernetes"
+  fi
+
   # Pending support for user-specified mountpoint for the guest (VM) binaries and scripts
   set_config_env "RUNCVM_GUEST" "$RUNCVM_GUEST"
 
@@ -557,6 +588,11 @@ if [ "$COMMAND" = "create" ]; then
   alpine|openwrt) RUNCVM_KERNEL_OS_KERNEL_PATH="/boot/vmlinuz-virt"
                   RUNCVM_KERNEL_OS_INITRAMFS_PATH="/boot/initramfs-virt"
                   RUNCVM_KERNEL_ROOT="rootfstype=virtiofs root=runcvmfs resume="
+                  ;;
+          firecracker)
+                  RUNCVM_KERNEL_OS_KERNEL_PATH=""
+                  RUNCVM_KERNEL_OS_INITRAMFS_PATH=""
+                  RUNCVM_KERNEL_ROOT="rootfstype=virtiofs root=runcvmfs rw"
                   ;;
 
            *) error "Unrecognised image O/S '$RUNCVM_KERNEL'; specify --env=RUNCVM_KERNEL=<dist> or --env=RUNCVM_KERNEL=<dist>/<version>"; ;;
