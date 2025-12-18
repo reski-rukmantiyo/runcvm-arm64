@@ -1,5 +1,8 @@
 #!/opt/runcvm/lib/ld-musl-aarch64.so.1 /opt/runcvm/bin/bash
 
+# DIAGNOSTIC: Dump environment to check for RUNCVM_LOG_LEVEL leakage
+env | grep RUNCVM > /tmp/runcvm-env-leak.log || true
+
 # REFERENCES
 
 # Virtiofs

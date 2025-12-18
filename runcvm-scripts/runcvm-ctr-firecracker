@@ -10,6 +10,7 @@ set -o errexit -o pipefail
 # set -x # Debug tracing disabled for production speed
 
 # Load original environment
+unset RUNCVM_LOG_LEVEL
 . /.runcvm/config
 
 # Load defaults
@@ -440,6 +441,7 @@ WATCHEOF
   
   # Copy the config file (needed by some scripts)
   if [ -f "/.runcvm/config" ]; then
+    busybox cp "/.runcvm/config" "${staging_dir}/.runcvm/config"
     busybox cp "/.runcvm/config" "${staging_dir}/.runcvm/config"
     log "    Copied /.runcvm/config"
   fi
