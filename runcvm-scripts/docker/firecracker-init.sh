@@ -16,13 +16,7 @@ INITEOF
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # Try to load RUNCVM_LOG_LEVEL from config if it exists
-if [ -f /.runcvm/config ]; then
-  # Extract RUNCVM_LOG_LEVEL from config (format: declare -x RUNCVM_LOG_LEVEL="VALUE")
-  RUNCVM_LOG_LEVEL=$(grep '^declare -x RUNCVM_LOG_LEVEL=' /.runcvm/config 2>/dev/null | sed 's/^declare -x RUNCVM_LOG_LEVEL="\(.*\)"$/\1/' | head -1)
-  
-  # Extract RUNCVM_SYSTEMD
-  RUNCVM_SYSTEMD=$(grep '^declare -x RUNCVM_SYSTEMD=' /.runcvm/config 2>/dev/null | sed 's/^declare -x RUNCVM_SYSTEMD="\(.*\)"$/\1/' | head -1)
-fi
+
 
 # Default to OFF if not set (matches host default for silent operation)
 # NOTE: DSR terminal issue is fixed by having log output during boot; 
@@ -88,20 +82,34 @@ is_debug() {
 }
 
 
-log INFO "Starting..."
+# Try to load RUNCVM_LOG_LEVEL from config if it exists
+if [ -f /.runcvm/config ]; then
+  # Load config by stripping 'declare -x' which is bash-specific
+  # This makes it compatible with busybox sh
+  while read -r line || [ -n "$line" ]; do
+    # Strip 'declare -x ' prefix if present
+    line="${line#declare -x }"
+    # Evaluate the export line
+    if [ -n "$line" ]; then
+      export "$line"
+    fi
+  done < /.runcvm/config
+fi
+
+log INFO "Starting... (Log Level: '$RUNCVM_LOG_LEVEL')"
 
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # DEBUG: Check environment
 if is_debug; then
-  log INFO "Environment check:"
-  log INFO "  PATH: $PATH"
-  log INFO "  busybox: $(which busybox 2>/dev/null || echo 'not found')"
+  log DEBUG "Environment check:"
+  log DEBUG "  PATH: $PATH"
+  log DEBUG "  busybox: $(which busybox 2>/dev/null || echo 'not found')"
   if [ -x /bin/busybox ]; then
-     log INFO "  /bin/busybox exists"
-     log INFO "  cttyhack in busybox: $(/bin/busybox --list | grep cttyhack || echo 'no')"
+     log DEBUG "  /bin/busybox exists"
+     log DEBUG "  cttyhack in busybox: $(/bin/busybox --list | grep cttyhack || echo 'no')"
   else
-     log INFO "  /bin/busybox missing"
+     log DEBUG "  /bin/busybox missing"
   fi
 fi
 
@@ -171,7 +179,7 @@ if [ -d "$RUNCVM_GUEST/lib" ]; then
     log DEBUG "bin/busybox: $(ls -la $RUNCVM_GUEST/bin/busybox 2>&1)"
     
     # Test the dynamic linker directly
-    log INFO "Testing dynamic linker..."
+    log DEBUG "Testing dynamic linker..."
     log DEBUG "Test 1 - ld exists: $(test -x $RUNCVM_LD && echo yes || echo no)"
     log DEBUG "Test 2 - busybox via ld: $($RUNCVM_LD $RUNCVM_GUEST/bin/busybox echo 'works' 2>&1)"
     
@@ -239,19 +247,19 @@ if [ "$HAVE_RUNCVM_TOOLS" = "1" ]; then
 fi
 
 # First, check what kernel modules are loaded for networking
-log INFO "Checking for virtio_net module..."
+log DEBUG "Checking for virtio_net module..."
 if is_debug && [ -f /proc/modules ]; then
   grep -i virtio /proc/modules 2>/dev/null || echo "  No virtio modules loaded"
 fi
 
 # Check /sys/class/net to see what the kernel sees
-log INFO "Kernel network interfaces in /sys/class/net:"
+log DEBUG "Kernel network interfaces in /sys/class/net:"
 if is_debug; then
   ls -la /sys/class/net/ 2>/dev/null || echo "  Cannot list /sys/class/net"
 fi
 
 # Check dmesg for network-related messages
-log INFO "Recent dmesg network messages:"
+log DEBUG "Recent dmesg network messages:"
 if is_debug; then
   dmesg 2>/dev/null | grep -iE "(eth|net|virtio)" | tail -10 || echo "  Cannot read dmesg"
 fi
@@ -372,10 +380,10 @@ if [ -x "/.runcvm/guest/usr/sbin/dropbear" ] && [ -x "/.runcvm/guest/lib/ld" ]; 
   export HOME=/root
   
   # DEBUG: Check keys and permissions
-  log INFO "DEBUG: Checking /root permissions:"
-  ls -ld /root /root/.ssh /root/.ssh/authorized_keys 2>&1 | while read line; do log INFO "$line"; done
-  log INFO "DEBUG: authorized_keys content:"
-  cat /root/.ssh/authorized_keys 2>&1 | while read line; do log INFO "$line"; done
+  log DEBUG "Checking /root permissions:"
+  ls -ld /root /root/.ssh /root/.ssh/authorized_keys 2>&1 | while read line; do log DEBUG "$line"; done
+  log DEBUG "authorized_keys content:"
+  cat /root/.ssh/authorized_keys 2>&1 | while read line; do log DEBUG "$line"; done
 
   # Start Dropbear (removed -v flag - unsupported by this version)
   /.runcvm/guest/lib/ld /.runcvm/guest/usr/sbin/dropbear -R -E -s -g -p 22222 2>&1 &

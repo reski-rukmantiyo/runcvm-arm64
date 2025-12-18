@@ -21,6 +21,7 @@ fi
 # DEBUG
 if [[ "$RUNCVM_BREAK" =~ (prenet|postnet) ]]; then set -x; fi
 
+
 # SAVE ENTRYPOINT
 args=("$@")
 printf "%s\n" "${args[@]}" >/.runcvm/entrypoint
@@ -84,6 +85,10 @@ fi
 export -n SHLVL OLDPWD
 
 export >/.runcvm/config
+
+# FIX: Explicitly enforce RUNCVM_LOG_LEVEL in config to avoid export ambiguities
+sed -i '/RUNCVM_LOG_LEVEL=/d' /.runcvm/config
+echo "declare -x RUNCVM_LOG_LEVEL=\"${RUNCVM_LOG_LEVEL:-OFF}\"" >> /.runcvm/config
 
 # NOW LOAD DEFAULT ENV AND PATH
 . $RUNCVM_GUEST/scripts/runcvm-ctr-defaults
