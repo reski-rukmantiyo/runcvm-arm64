@@ -1,16 +1,6 @@
-#!/opt/runcvm/lib/ld-musl-aarch64.so.1 /opt/runcvm/bin/bash
-
-# REFERENCES
-
-# Qemu:
-# - https://github.com/joshkunz/qemu-docker
-# - https://mergeboard.com/blog/2-qemu-microvm-docker/
-# - https://github.com/BBVA/kvm
 
 # Virtiofs
 # - https://vmsplice.net/~stefan/virtio-fs_%20A%20Shared%20File%20System%20for%20Virtual%20Machines.pdf
-# - https://virtio-fs.gitlab.io/howto-qemu.html
-# - https://www.tauceti.blog/posts/qemu-kvm-share-host-directory-with-vm-with-virtio/
 
 # Container config.json spec
 # - https://github.com/opencontainers/runtime-spec/
@@ -40,7 +30,7 @@ RUNCVM_KERNELS=$RUNCVM/kernels
 RUNCVM_GUEST_KERNELS=$RUNCVM_GUEST/kernels
 RUNCVM_KERNEL_DEFAULT=firecracker
 RUNCVM_MEM_SIZE_DEFAULT="768" # Default VM memory size (Mb) if not specified in container config
-RUNCVM_CONTAINER_MEM_OVERHEAD="256" # Memory (Mb) overhead to allow for QEMU, virtiofsd, dnsmasq and other container memory footprint: 768Mb minimum, 1024Mb recommended
+RUNCVM_CONTAINER_MEM_OVERHEAD="256" # Memory (Mb) overhead to allow for Firecracker, virtiofsd, dnsmasq and other container memory footprint: 768Mb minimum, 1024Mb recommended
 
 # ============================================================
 # LOGGING SYSTEM
@@ -271,7 +261,6 @@ is_sandbox_container() {
   
   return 1
 }
-
 
 # PARSE RUNC GLOBAL OPTIONS:
 # --debug             enable debug logging
@@ -718,32 +707,13 @@ if [ "$COMMAND" = "create" ]; then
     # If RUNCVM_KERNEL was specified, or we didn't find a kernel and initramfs at the expected paths in the container image,
     # select the latest RUNCVM kernel version and arrange to mount it.
 
-    # Check if Firecracker hypervisor is being used - skip module mounting since
+    # Firecracker hypervisor detected - skip module mounting since
     # Firecracker uses its own kernel with built-in modules (no external .ko files needed)
-    RUNCVM_HYPERVISOR=$(get_config_env 'RUNCVM_HYPERVISOR' 'firecracker')
-    if [ "$RUNCVM_HYPERVISOR" = "firecracker" ]; then
-      log "Firecracker hypervisor detected - skipping kernel module bind-mount"
-      # Set dummy values for logging
-      RUNCVM_KERNEL_VERSION="firecracker"
-      RUNCVM_KERNEL_MODULES_SRC=""
-      RUNCVM_KERNEL_MODULES_DST=""
-    else
-      RUNCVM_KERNEL_VERSION=$(basename $(readlink -f "$RUNCVM_KERNELS/$RUNCVM_KERNEL_IDVER")) # Returns e.g. 5.15.53-0-virt
-
-      RUNCVM_KERNEL_MOUNT_LIB_MODULES=$(get_config_env 'RUNCVM_KERNEL_MOUNT_LIB_MODULES')
-      if [ -n "$RUNCVM_KERNEL_MOUNT_LIB_MODULES" ]; then
-        RUNCVM_KERNEL_MODULES_SRC="$RUNCVM_KERNELS/$RUNCVM_KERNEL_ID/$RUNCVM_KERNEL_VERSION/modules"
-        RUNCVM_KERNEL_MODULES_DST="/lib/modules"
-      else
-        RUNCVM_KERNEL_MODULES_SRC="$RUNCVM_KERNELS/$RUNCVM_KERNEL_ID/$RUNCVM_KERNEL_VERSION/modules/$RUNCVM_KERNEL_VERSION"
-        RUNCVM_KERNEL_MODULES_DST="/lib/modules/$RUNCVM_KERNEL_VERSION"
-      fi
-      
-      RUNCVM_KERNEL_PATH="$RUNCVM_GUEST_KERNELS/$RUNCVM_KERNEL_ID/$RUNCVM_KERNEL_VERSION/vmlinuz"
-      RUNCVM_KERNEL_INITRAMFS_PATH="$RUNCVM_GUEST_KERNELS/$RUNCVM_KERNEL_ID/$RUNCVM_KERNEL_VERSION/initrd"
-
-      jq_set "$CFG" --arg modules_dst "$RUNCVM_VM_MOUNTPOINT$RUNCVM_KERNEL_MODULES_DST" --arg modules_src "$RUNCVM_KERNEL_MODULES_SRC" '.mounts += [{"destination":$modules_dst,"type":"bind","source":$modules_src,"options":["bind","private","ro"]}]'
-    fi
+    log "Firecracker hypervisor detected - skipping kernel module bind-mount"
+    # Set dummy values for logging
+    RUNCVM_KERNEL_VERSION="firecracker"
+    RUNCVM_KERNEL_MODULES_SRC=""
+    RUNCVM_KERNEL_MODULES_DST=""
   fi
 
   log "RUNCVM_KERNEL='$RUNCVM_KERNEL'"
@@ -763,13 +733,9 @@ if [ "$COMMAND" = "create" ]; then
 
   # Configure devices
 
-  if [ "$(get_config_env 'RUNCVM_QEMU_NET_VHOST')" = "1" ]; then
-    jq_set "$CFG" '.linux.resources.devices += [{"allow":true,"type":"c","major":10,"minor":232,"access":"rwm"},{"allow":true,"type":"c","major":10,"minor":200,"access":"rwm"},{"allow":true,"type":"c","major":10,"minor":238,"access":"rwm"}]'
-    jq_set "$CFG" '.linux.devices+=[{"path":"/dev/net/tun","type":"c","major":10,"minor":200,"fileMode":8630,"uid":0,"gid":0},{"path":"/dev/kvm","type":"c","major":10,"minor":232,"fileMode":8630,"uid":0,"gid":0},{"path":"/dev/vhost-net","type":"c","major":10,"minor":238,"fileMode":8630,"uid":0,"gid":0}]'
-  else
-    jq_set "$CFG" '.linux.resources.devices += [{"allow":true,"type":"c","major":10,"minor":232,"access":"rwm"},{"allow":true,"type":"c","major":10,"minor":200,"access":"rwm"}]'
-    jq_set "$CFG" '.linux.devices+=[{"path":"/dev/net/tun","type":"c","major":10,"minor":200,"fileMode":8630,"uid":0,"gid":0},{"path":"/dev/kvm","type":"c","major":10,"minor":232,"fileMode":8630,"uid":0,"gid":0}]'
-  fi
+  # Allow access to KVM and TUN devices
+  jq_set "$CFG" '.linux.resources.devices += [{"allow":true,"type":"c","major":10,"minor":232,"access":"rwm"},{"allow":true,"type":"c","major":10,"minor":200,"access":"rwm"}]'
+  jq_set "$CFG" '.linux.devices+=[{"path":"/dev/net/tun","type":"c","major":10,"minor":200,"fileMode":8630,"uid":0,"gid":0},{"path":"/dev/kvm","type":"c","major":10,"minor":232,"fileMode":8630,"uid":0,"gid":0}]'
   
   # For now, hardcode --security-opt=seccomp=unconfined;
   # later, we can work out the minimal seccomp permissions required.

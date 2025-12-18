@@ -25,7 +25,6 @@ if ! command -v iptables >/dev/null 2>&1; then
   fi
 fi
 
-
 # Log severity levels (numeric for comparison)
 declare -A LOG_LEVELS=(
   [DEBUG]=0
@@ -553,8 +552,8 @@ case "${RUNCVM_HYPERVISOR:-firecracker}" in
     exec $RUNCVM_GUEST/sbin/runcvm-init -c $RUNCVM_GUEST/scripts/runcvm-ctr-firecracker
     ;;
     
-  qemu|*)
-    log_info "Launching QEMU VM..."
-    exec $RUNCVM_GUEST/sbin/runcvm-init -c $RUNCVM_GUEST/scripts/runcvm-ctr-qemu
+  *)
+    log_error "Unsupported hypervisor: $RUNCVM_HYPERVISOR (only 'firecracker' is supported)"
+    exit 1
     ;;
 esac

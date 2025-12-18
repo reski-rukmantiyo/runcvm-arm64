@@ -9,7 +9,6 @@ Key Features:
 - **Firecracker Hypervisor**: Boots in <500ms using lightweight microVMs.
 - **ARM64 Optimized**: Native support for Apple Silicon (M1/M2/M3/M4) and ARM64 servers.
 - **Docker Integration**: Seamless `docker run` experience with volume and network support.
-- **Legacy Support**: Optional QEMU backward compatibility for x86_64.
 
 ## Quick start
 
@@ -29,13 +28,7 @@ docker run --runtime=runcvm --name nginx-fc --rm -p 8080:80 nginx
 
 > **Note**: This will launch a Firecracker microVM with a ~200ms boot time.
 
-### Legacy QEMU Mode (Optional)
 
-If you need full QEMU features (like complex device emulation), explicitly request it:
-
-```console
-docker run --runtime=runcvm --env=RUNCVM_HYPERVISOR=qemu --name nginx-qemu --rm -p 8080:80 nginx
-```
 
 Launch a MariaDB VM, with 2 cpus and 2G memory, listening on port 3306:
 
@@ -55,11 +48,7 @@ Gain another interactive console on `ubuntu1`:
 docker exec -it ubuntu1 bash
 ```
 
-Launch with VNC:
 
-```console
-docker run --runtime=runcvm --name ubuntu2 --env=RUNCVM_DISPLAY_MODE=vnc -p 5900:5900 ubuntu
-```
 
 Launch a VM with 1G memory and a 1G ext4-formatted backing file mounted at `/var/lib/docker` and stored in the underlying container's filesystem:
 
@@ -81,21 +70,7 @@ cd runcvm/tests/00-http-docker-swarm && \
 NODES=3 MTU=9000 ./test
 ```
 
-### Graphical workloads with VNC
 
-Launch Ubuntu:
-
-```console
-cat <<EOF | docker build --tag=ubuntu-x -
-FROM ubuntu:jammy
-ENV DEBIAN_FRONTEND=noninteractive
-RUN apt update && apt -y install --install-recommends apt-utils kmod wget iproute2 systemd ca-certificates curl gnupg udev dbus lightdm
-ENTRYPOINT ["/lib/systemd/systemd"]
-ENV RUNCVM_DISPLAY_MODE=vnc
-EOF
-
-docker run -d --runtime=runcvm -m 2g --name=vnc -p 5900:5900 ubuntu-x
-```
 
 ### System workloads
 
@@ -262,7 +237,6 @@ RunCVM is free and open-source, licensed under the Apache Licence, Version 2.0. 
 
 - **Firecracker by Default**: Integrated Amazon Firecracker as the primary hypervisor for ARM64.
 - Support for booting VM with a file-backed disk root fs generated from the container image (Standard in Firecracker mode).
-- Support for QEMU [microvm](https://qemu.readthedocs.io/en/latest/system/i386/microvm.html) (via Legacy QEMU mode).
 - More natural console support with independent stdout and stderr channels for `docker run -it`
 - Improve VM boot time and other behaviours using custom kernel
 - Support for specific hardware e.g. graphics display served via VNC
@@ -297,34 +271,20 @@ RunCVM is tested on Debian Bullseye and [GitHub Codespaces](https://github.com/c
 
 RunCVM supports both **x86_64 (amd64)** and **ARM64 (aarch64)** architectures.
 
+
 ### x86_64 (amd64)
 
-The original and primary architecture. Uses:
-- QEMU with `qemu-system-x86_64`
-- SeaBIOS or OVMF EFI firmware
-- KVM acceleration with `-enable-kvm`
-- Machine type: `q35`
+The original and primary architecture.
 
 ### ARM64 (aarch64)
 
 Full support for ARM64 systems including Apple Silicon Macs (M1/M2/M3/M4) running Docker Desktop or Lima, and native ARM64 Linux servers. Uses:
-- QEMU with `qemu-system-aarch64`
-- AAVMF (ARM64 UEFI) firmware - ARM64 always boots via UEFI
-- Machine type: `virt` with GIC (Generic Interrupt Controller)
 - CPU: `max` for optimal feature support
 
 #### ARM64 Technical Details
 
-The ARM64 port includes several architecture-specific adaptations:
+The ARM64 port includes several architecture-specific adaptations.
 
-| Component | x86_64 | ARM64 |
-|-----------|--------|-------|
-| QEMU binary | `qemu-system-x86_64` | `qemu-system-aarch64` |
-| Firmware | SeaBIOS / OVMF | AAVMF (UEFI only) |
-| Machine type | `q35` | `virt,gic-version=max` |
-| Debug exit | I/O port (`isa-debug-exit`) | PSCI (`reboot()` syscall) |
-| VGA device | `virtio-vga` | `virtio-gpu` |
-| Kernel packages | `linux-image-amd64` | `linux-image-arm64` |
 
 #### Building for ARM64
 
@@ -510,10 +470,6 @@ In the below summary of RunCVM's current main features and limitations, [+] is u
 - Kernels
    - [+] Use any kernel, either one pre-packaged with RunCVM or roll your own
    - [+] RunCVM will try to select an appropriate kernel to use based on examination of `/etc/os-release` within the image being launched.
-- Firmware
-  - [+] [SeaBIOS](https://github.com/qemu/seabios) (x86_64 only)
-  - [+] [OVMF EFI](https://github.com/tianocore/tianocore.github.io/wiki/OVMF) (x86_64)
-  - [+] [AAVMF](https://wiki.ubuntu.com/UEFI/AAVMF) (ARM64 - UEFI boot, always enabled)
 - Architectures
   - [+] x86_64 (amd64) - full support
   - [+] ARM64 (aarch64) - full support including Apple Silicon
@@ -538,13 +494,7 @@ RunCVM (Firecracker Edition) uses Amazon Firecracker as the default hypervisor.
 For a detailed integration guide, see [INTEGRATION_GUIDE.md](INTEGRATION_GUIDE.md).
 For known issues, see [docs/docker/firecracker-known-issues.md](docs/docker/firecracker-known-issues.md).
 
-### Legacy QEMU Support
 
-To use the legacy QEMU hypervisor (e.g. for x86_64 or features not yet in Firecracker mode):
-
-```console
-docker run --runtime=runcvm -e RUNCVM_HYPERVISOR=qemu ...
-```
 
 
 
@@ -710,88 +660,6 @@ docker run -it --runtime=runcvm --mount=type=volume,src=runcvm-disks,dst=/disks 
 This example behaves similarly, except that the `runcvm-disks` persistent Docker volume is first mounted at `/disks` within the container's filesystem, and therefore the backing files at `/disks/disk1` and `/disks/disk2` (mounted in the VM at `/home` and `/opt` respectively) are stored in the _persistent volume_ (typically stored in `/var/lib/docker` on the host, bypassing overlay2).
 
 > N.B. `/disks` and any paths below it are _reserved mountpoints_. Unlike other mountpoints, these are *NOT* mounted into the VM but only into the container, and are therefore suitable for use for mounting VM disks from bscking files that cannot be accessed within the VM's filesystem.
-
-### `--env=RUNCVM_DISPLAY_MODE=<value>`
-
-Shortcut to select a display mode:
-- `headless` is traditional headless runc-like behaviour over hvc0;
-- `serial` is similar over `ttyS0`;
-- `vnc`, enables launches a VNC server over a VGA device (`virtio`, the default; or `std`) on VNC display `RUNCVM_QEMU_VNC_DISPLAY` (default display is `0` aka `:0`) with virtual tablet and audio device.
-
-> N.B. Use `--env=RUNCVM_DISPLAY_MODE=vnc` always with `-p <hostport>:<guestport>` where `<guestport> = <display> + 5900` and `<display>` is 0 (unless, optionally, `--env=RUNCVM_QEMU_VNC_DISPLAY=<display>` is used to specify a different `<display>` >= 0) to initiate a VNC server to which a VNC client can connect on host port `<hostport>`.
->
-> e.g. `docker run --runtime=runcvm --env=RUNCVM_DISPLAY_MODE=vnc -p 5900:5900 ubuntu`
-
-### `--env=RUNCVM_QEMU_VGA=<value>`
-
-Selects a QEMU guest VGA adaptor: `none`, `virtio`, `std`, `cirrus`. Can be used with `--env=RUNCVM_DISPLAY_MODE=vnc` to override default `virtio` VGA device.
-
-> Note: On ARM64, `virtio-gpu` is used instead of `virtio-vga` as VGA is not available on ARM architecture.
-
-### `--env=RUNCVM_QEMU_VNC_DISPLAY=<display>`
-
-With `--env=RUNCVM_DISPLAY_MODE=vnc`, overrides the VNC display number (and hence `<guestport>`).
-
-With `--env=RUNCVM_DISPLAY_MODE=headless`, specifies also that a VNC server should also be launched with the given display number.
-
-### `--env=RUNCVM_QEMU_DISPLAY=<value>` [experimental]
-
-Specify a QEMU frontend display. Normally RunCVM runs headless, without any frontend display, so the default is `none`. Currently only `curses` is supported.
-
-### `--env=RUNCVM_QEMU_USB=<value>`
-
-Enable USB interface.
-
-### `--env=RUNCVM_BIOS=EFI`
-
-By default SeaBIOS is used to boot the VM on x86_64. Enable OVMF EFI boot with this option.
-
-> Note: On ARM64, UEFI boot (via AAVMF) is always used regardless of this setting, as ARM64 does not support legacy BIOS.
-
-### `--env=RUNCVM_QEMU_ARCH=<value>`
-
-Explicitly specify the QEMU architecture to use. Supported values:
-- `x86_64` - Use x86_64 emulation
-- `arm64` - Use ARM64 emulation
-
-By default, RunCVM auto-detects the host architecture and uses the appropriate QEMU binary.
-
-### `--env=RUNCVM_QEMU_NET_VHOST=1`
-
-Enable use of [virtio vhost-net](https://www.redhat.com/en/blog/introduction-virtio-networking-and-vhost-net) (reliant on host `vhost_net` module and `/dev/vhost-net` device) to accelerate networking.
-
-### `--env=RUNCVM_SYS_ADMIN=1`
-
-By default, `virtiofsd` is not launched with `-o modcaps=+sys_admin` (and containers are not granted `CAP_SYS_ADMIN`). Use this option if you need to change this.
-
-### `--env=RUNCVM_KERNEL_MOUNT_LIB_MODULES=1`
-
-If a RunCVM kernel (as opposed to an in-image kernel) is chosen to launch a VM, by default that kernel's modules will be mounted at `/lib/modules/<version>` in the VM. If this variables is set, that kernel's modules will instead be mounted over `/lib/modules`.
-
-### `--env=RUNCVM_KERNEL_DEBUG=1`
-
-Enable kernel logging (sets kernel `console=ttyS0`).
-
-### `--env=RUNCVM_BIOS_DEBUG=1`
-
-By default BIOS console output is hidden. Enable it with this option. With `--env=RUNCVM_BIOS=EFI`, this option has no effect.
-
-> Note: This option is only applicable to x86_64. ARM64 uses UEFI which does not have traditional BIOS debug output.
-
-### `--env=RUNCVM_RUNTIME_DEBUG=1`
-
-Enable debug logging for the runtime (the portion of RunCVM directly invoked by `docker run`, `docker exec` etc).
-Debug logs are written to files in `/tmp`.
-
-### `--env=RUNCVM_QEMU_DEBUG=1`
-
-Enable logging the exit code from QEMU and OOM statistics.
-
-### `--env=RUNCVM_HYPERVISOR=<firecracker|qemu>`
-
-Select the hypervisor to use. Default is `firecracker`.
-- `firecracker`: The lightweight, fast-booting microVM hypervisor (Default).
-- `qemu`: The legacy, fully-featured hypervisor (uses virtiofs, slower boot).
 
 ### `--env=RUNCVM_LOG_LEVEL=<OFF|ERROR|INFO|DEBUG>`
 

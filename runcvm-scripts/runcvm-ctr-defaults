@@ -3,10 +3,6 @@
 RUNCVM_GUEST=${RUNCVM_GUEST:-/.runcvm/guest}
 RUNCVM_PATH=$RUNCVM_GUEST/usr/sbin:$RUNCVM_GUEST/usr/bin:$RUNCVM_GUEST/sbin:$RUNCVM_GUEST/bin:$RUNCVM_GUEST/usr/lib/qemu
 
-QEMU_VIRTIOFSD_SOCKET=/run/.virtiofs.sock
-QEMU_GUEST_AGENT=/run/.qemu-guest-agent
-QEMU_MONITOR_SOCKET=/run/.qemu-monitor-socket
-
 SSHD_PORT=22222
 
 clean_env() {
@@ -16,7 +12,6 @@ clean_env() {
   RUNCVM_RUNTIME_DEBUG \
   RUNCVM_BIOS_DEBUG RUNCVM_BIOS \
   RUNCVM_DISPLAY_MODE \
-  RUNCVM_QEMU_DEBUG RUNCVM_QEMU_ARCH RUNCVM_QEMU_DISPLAY RUNCVM_QEMU_VGA RUNCVM_QEMU_VNC_DISPLAY RUNCVM_QEMU_USB RUNCVM_QEMU_NET_VHOST RUNCVM_QEMU_MEM_PREALLOC \
   RUNCVM_KERNEL RUNCVM_KERNEL_ROOT RUNCVM_KERNEL_APPEND RUNCVM_KERNEL_INITRAMFS_PATH RUNCVM_KERNEL_DEBUG RUNCVM_KERNEL_PATH \
   RUNCVM_DISKS \
   RUNCVM_UIDGID RUNCVM_VM_MOUNTPOINT RUNCVM_TMPFS \
@@ -51,7 +46,7 @@ create_aliases() {
       dnsmasq \
       blkid findmnt getent mke2fs resize2fs mount nc ping socat \
       xtables-nft-multi xtables-legacy-multi \
-      qemu-system-aarch64 qemu-ga \
+
       dbclient dropbear dropbearkey \
       s6-applyuidgid \
       tput \
