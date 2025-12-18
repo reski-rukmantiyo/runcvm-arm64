@@ -41,73 +41,13 @@ RUNCVM_CONTAINER_MEM_OVERHEAD="256" # Memory (Mb) overhead to allow for Firecrac
 # Control via: RUNCVM_LOG_LEVEL environment variable
 # ============================================================
 
-# Default log level (can be overridden by environment)
-RUNCVM_LOG_LEVEL="${RUNCVM_LOG_LEVEL:-OFF}"
+# Configure Logger for Runtime
+RUNCVM_COMPONENT_NAME="RunCVM-Runtime"
+RUNCVM_LOG_FILE="/opt/runcvm/runtime.log"
 
-# Log severity levels (numeric for comparison)
-# Log severity levels (numeric for comparison)
-get_log_level_num() {
-  case "$1" in
-    DEBUG) echo 0 ;;
-    INFO|LOG) echo 1 ;;
-    ERROR) echo 2 ;;
-    OFF) echo 999 ;;
-    *) echo 999 ;;
-  esac
-}
+# Source logging functions
+. "$RUNCVM/scripts/common/logging.sh"
 
-# Get numeric level for current log level (default to OFF=999)
-CURRENT_LOG_LEVEL=$(get_log_level_num "${RUNCVM_LOG_LEVEL:-OFF}")
-
-# Core logging function
-_log() {
-  local severity="$1"
-  shift
-  local message="$*"
-  local severity_level=$(get_log_level_num "$severity")
-  
-  # Only log if severity meets threshold
-  
-  # Only log if severity meets threshold
-  if [ "$severity_level" -ge "$CURRENT_LOG_LEVEL" ]; then
-    local timestamp=$(date '+%Y-%m-%d %H:%M:%S.%6N')
-    echo "[$timestamp] [RunCVM-Runtime] [$$] [$severity] $message" >> /opt/runcvm/runtime.log
-    # Also output ERROR to stderr
-    if [ "$severity" = "ERROR" ]; then
-      echo "[$timestamp] [RunCVM-Runtime] [$severity] $message" >&2
-    fi
-  fi
-}
-
-# Convenience functions for different severity levels
-log_debug() {
-  _log DEBUG "$@"
-}
-
-log_info() {
-  _log INFO "$@"
-}
-
-log() {
-  # Default log function - maps to INFO for backward compatibility
-  _log INFO "$@"
-}
-
-log_error() {
-  _log ERROR "$@"
-}
-
-error() {
-  # Skip past any docker error ending in CR
-  (echo; echo) >&2
-  
-  # Dump message to stderr
-  echo "RunCVM: Error: $1" >&2
-  
-  # Log error with severity
-  log_error "$1"
-  exit 1
-}
 
 # ============================================================
 # CLEANUP HANDLER
@@ -127,92 +67,9 @@ cleanup_on_exit() {
 # Register cleanup handlers for signals
 trap cleanup_on_exit EXIT SIGTERM SIGINT
 
-load_env_from_file() {
-  local file="$1"
-  local var="$2"
+# Source JSON helper functions
+. "$RUNCVM/scripts/common/json.sh"
 
-  # Return gracefully if no $file exists
-  if ! [ -f "$file" ]; then
-    return 0
-  fi
-
-  while read LINE
-  do
-    local name="${LINE%%=*}"
-    local value="${LINE#*=}"
-    
-    if [ "$name" != "$LINE" ] && [ "$value" != "$LINE" ] && [ "$name" = "$var" ]; then
-      # We found variable $name: return it, removing any leading/trailing double quotes
-      echo "$value" | sed 's/^"//;s/"$//'
-      return 0
-    fi
-  done <"$file"
-  
-  return 1
-}
-
-jq() {
-  $RUNCVM_LD $RUNCVM_JQ "$@"
-}
-
-jq_set() {
-  local file="$1"
-  shift
-  
-  local tmp="/tmp/config.json.$$"
-
-  if jq "$@" $file >$tmp; then
-    mv $tmp $file
-  else
-    echo "Failed to update $(basename $file); aborting!" 2>&1
-    exit 1
-  fi
-}
-
-jq_get() {
-  local file="$1"
-  shift
-  
-  jq -r "$@" $file
-}
-
-get_process_env() {
-  local file="$1"
-  local var="$2"
-  local default="$3"
-  local value
-  
-  value=$(jq_get "$file" --arg env "$var" '.env[] | select(match("^" + $env + "=")) | match("^" + $env + "=(.*)") | .captures[] | .string')
-  
-  [ -n "$value" ] && echo -n "$value" || echo -n "$default"
-}
-
-get_process_env_boolean() {
-  local file="$1"
-  local var="$2"
-  local value
-  
-  value=$(jq_get "$file" --arg env "$var" '.env[] | select(match("^" + $env + "=")) | match("^" + $env + "=(.*)") | .captures[] | .string')
-  
-  [ -n "$value" ] && echo "1" || echo "0"
-}
-
-get_config_env() {
-  local var="$1"
-  local default="$2"
-  local value
-
-  value=$(jq_get "$CFG" --arg env "$var" '.process.env[] | select(match("^" + $env + "=")) | match("^" + $env + "=(.*)") | .captures[] | .string')
-  
-  [ -n "$value" ] && echo -n "$value" || echo -n "$default"
-}
-
-set_config_env() {
-  local var="$1"
-  local value="$2"
-  
-  jq_set "$CFG" --arg env "$var=$value" '.process.env |= (.+ [$env] | unique)'
-}
 
 # is_sandbox_container - Detect Kubernetes sandbox/pause containers
 # These should bypass RunCVM and run directly with runc

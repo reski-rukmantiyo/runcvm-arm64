@@ -27,173 +27,22 @@ NFS_PORT_MAX=1050
 # Control via: RUNCVM_LOG_LEVEL environment variable
 # ============================================================
 
-# Default log level (can be overridden by environment)
-RUNCVM_LOG_LEVEL="${RUNCVM_LOG_LEVEL:-OFF}"
+# Configure Logger for Firecracker (Container side)
+RUNCVM_COMPONENT_NAME="RunCVM-FC"
+RUNCVM_LOG_FILE=""   # Disable file logging
+RUNCVM_LOG_STDERR=1  # Enable stderr logging
 
-# Log severity levels (numeric for comparison)
-declare -A LOG_LEVELS=(
-  [DEBUG]=0
-  [INFO]=1
-  [LOG]=1      # Alias for INFO
-  [ERROR]=2
-  [OFF]=999
-)
-
-# Get numeric level for current log level (default to OFF=999)
-CURRENT_LOG_LEVEL="${LOG_LEVELS[$RUNCVM_LOG_LEVEL]:-999}"
-
-# Core logging function
-_log() {
-  local severity="$1"
-  shift
-  local message="$*"
-  local severity_level="${LOG_LEVELS[$severity]:-1}"
-  
-  # Only log if severity meets threshold
-  if [ "$severity_level" -ge "$CURRENT_LOG_LEVEL" ]; then
-    echo "[$(busybox date '+%Y-%m-%d %H:%M:%S')] [RunCVM-FC] [$severity] $message" >&2
-  fi
-}
-
-# Convenience functions for different severity levels
-log_debug() {
-  _log DEBUG "$@"
-}
-
-log_info() {
-  _log INFO "$@"
-}
-
-log() {
-  # Default log function - maps to INFO for backward compatibility
-  _log INFO "$@"
-}
-
-log_error() {
-  _log ERROR "$@"
-}
-
-error() {
-  # ALWAYS log errors to stderr, regardless of log level
-  echo "[$(busybox date '+%Y-%m-%d %H:%M:%S')] [RunCVM-FC] [ERROR] $@" >&2
-  exit 1
-}
+# Source common logging
+. "$RUNCVM_GUEST/scripts/common/logging.sh"
 
 
 
-setup_nfs_volumes() {
-  # NFS volume sync using HOST-SIDE unfsd
-  # Architecture:
-  #   Host: runcvm-runtime starts unfsd daemon and sets RUNCVM_NFS_VOLUMES env var
-  #   Container: reads env var and writes NFS config for guest VM
-  #   Guest: mounts via NFS client (kernel built-in)
-  #
-  # RUNCVM_NFS_VOLUMES format: src:dst:port|src2:dst2:port2|...
-  
-  local nfs_config="$NFS_CONFIG"
-  
-  # DEBUG: Show what we have (only if log level is DEBUG)
-  if [ "$RUNCVM_LOG_LEVEL" = "DEBUG" ]; then
-    echo "[DEBUG] setup_nfs_volumes checking env var" >&2
-    echo "[DEBUG] RUNCVM_NFS_VOLUMES=${RUNCVM_NFS_VOLUMES:-<not set>}" >&2
-  fi
-  
-  # Read from environment variable (set by runcvm-runtime)
-  if [ -n "$RUNCVM_NFS_VOLUMES" ]; then
-    > "$nfs_config"
-    
-    log INFO "Setting up NFS volumes from RUNCVM_NFS_VOLUMES env"
-    
-    # Parse pipe-separated entries
-    echo "$RUNCVM_NFS_VOLUMES" | busybox tr '|' '\n' | while IFS=: read -r src dst port; do
-      if [ -z "$src" ]; then continue; fi
-      if [ -z "$port" ]; then port="2049"; fi
-      
-      log INFO "  Volume: $src -> $dst (port $port)"
-      if [ "$RUNCVM_LOG_LEVEL" = "DEBUG" ]; then
-         echo "[DEBUG] NFS config line: $src:$dst:$port" >&2
-      fi
-      
-      # Write config for guest (format: src:dst:port)
-      echo "$src:$dst:$port" >> "$nfs_config"
-    done
-    
-    log INFO "  NFS config written to $nfs_config"
-    if [ "$RUNCVM_LOG_LEVEL" = "DEBUG" ]; then
-      echo "[DEBUG] Final nfs_config: $(busybox cat $nfs_config)" >&2
-    fi
-    
-  else
-    log INFO "RUNCVM_NFS_VOLUMES not set, skipping NFS volume setup"
-  fi
-}
 
-cleanup_nfs_volumes() {
-  # NFS cleanup is handled by runcvm-runtime on container stop
-  # Nothing to do here
-  :
-}
+# Source Firecracker modules
+. "$RUNCVM_GUEST/scripts/docker/firecracker-disk.sh"
+. "$RUNCVM_GUEST/scripts/docker/firecracker-network.sh"
+. "$RUNCVM_GUEST/scripts/docker/firecracker-config.sh"
 
-trap cleanup_nfs_volumes EXIT SIGTERM SIGINT
-
-generate_network_configs() {
-  local staging_dir="$1"
-  # Save network configuration for all VMs
-  if [ -d "/.runcvm/network/devices" ]; then
-    for net_dev_file in $(busybox ls /.runcvm/network/devices/* | busybox sort); do
-      local ifname=$(busybox basename "$net_dev_file")
-      [ "$ifname" = "default" ] && continue
-      
-      read DOCKER_IF DOCKER_IF_MAC DOCKER_IF_MTU DOCKER_IF_IP DOCKER_IF_IP_NETPREFIX DOCKER_IF_IP_GW < "$net_dev_file"
-      
-      # Firecracker MAC
-      local fc_mac=$(echo "$DOCKER_IF_MAC" | busybox sed 's/^..:..:../AA:FC:00/')
-      
-      log "  Saving network config for $ifname: IP=$DOCKER_IF_IP/$DOCKER_IF_IP_NETPREFIX GW=$DOCKER_IF_IP_GW"
-      
-      cat > "${staging_dir}/.runcvm-network-${ifname}" << NETEOF
-FC_IP="$DOCKER_IF_IP"
-FC_PREFIX="$DOCKER_IF_IP_NETPREFIX"
-FC_GW="$DOCKER_IF_IP_GW"
-FC_MTU="$DOCKER_IF_MTU"
-FC_MAC="$fc_mac"
-NETEOF
-    done
-  fi
-}
-
-# Create rootfs image from a source directory
-create_rootfs_from_dir() {
-  local source_dir="$1"
-  local image_path="$2"
-  local size_mb="$3"
-  
-  log "Creating ext4 rootfs: $image_path (${size_mb}MB) from $source_dir"
-  
-  # Create sparse file
-  if ! busybox truncate -s "${size_mb}M" "$image_path"; then
-    error "Failed to create sparse file"
-  fi
-  
-  # Create ext4 filesystem populated with source directory contents
-  if [ "$RUNCVM_LOG_LEVEL" = "DEBUG" ]; then
-    # Show mke2fs output in debug mode
-    if ! mke2fs -F -t ext4 -E root_owner=0:0 -d "$source_dir" "$image_path" 2>&1; then
-      log "mke2fs failed"
-      busybox rm -f "$image_path"
-      return 1
-    fi
-  else
-    # Silent mode - redirect to /dev/null
-    if ! mke2fs -F -t ext4 -E root_owner=0:0 -d "$source_dir" "$image_path" >/dev/null 2>&1; then
-      log_error "mke2fs failed"
-      busybox rm -f "$image_path"
-      return 1
-    fi
-  fi
-  log "Rootfs created successfully"
-  return 0
-}
 
 # Main function
 main() {
@@ -2042,32 +1891,17 @@ fi # End Cache Miss/No Cache logic
   fi
 
   # Create Firecracker config file
-  cat > "$FIRECRACKER_CONFIG" << CFGEOF
-{
-  "boot-source": {
-    "kernel_image_path": "$kernel_path",
-    "boot_args": "$boot_args"
-  },
-  "logger": {
-    "log_path": "/dev/null",
-    "level": "Error",
-    "show_level": false,
-    "show_log_origin": false
-  },
-  "drives": [
-    {
-      "drive_id": "rootfs",
-      "path_on_host": "$rootfs_path",
-      "is_root_device": true,
-      "is_read_only": false
-    }
-  ],
-    "machine-config": {
-      "vcpu_count": $vcpu_count,
-      "mem_size_mib": $mem_mb
-    }${network_config}${vsock_config}${balloon_config}
-}
-CFGEOF
+  # Create Firecracker config file
+  generate_firecracker_config \
+    "$kernel_path" \
+    "$boot_args" \
+    "$rootfs_path" \
+    "$vcpu_count" \
+    "$mem_mb" \
+    "$network_config" \
+    "$vsock_config" \
+    "$balloon_config" \
+    "$FIRECRACKER_CONFIG"
 
   # ALWAYS show Firecracker config for debugging vsock issue
   log INFO "=== FIRECRACKER CONFIG (checking vsock) ==="
