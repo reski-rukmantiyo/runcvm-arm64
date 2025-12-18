@@ -562,11 +562,9 @@ elif [ -x "/.runcvm/guest/bin/busybox" ] && /.runcvm/guest/bin/busybox --list | 
   fi
 fi
 
-if [ -n "$CTTYHACK" ]; then
+  if [ -n "$CTTYHACK" ]; then
   # Option 1: cttyhack found
-  if [ "$RUNCVM_LOG_LEVEL" = "DEBUG" ]; then
-    echo "RunCVM-FC init: TTY enabled ($CTTYHACK)"
-  fi
+  log DEBUG "TTY enabled ($CTTYHACK)"
   
   run_with_tty() {
     # Run as child so we can reboot after
@@ -575,9 +573,7 @@ if [ -n "$CTTYHACK" ]; then
   }
 elif command -v setsid >/dev/null 2>&1; then
   # Option 2: setsid found
-  if [ "$RUNCVM_LOG_LEVEL" = "DEBUG" ]; then
-    echo "RunCVM-FC init: TTY enabled (setsid fallback)"
-  fi
+  log DEBUG "TTY enabled (setsid fallback)"
   
   # Wrapper to run in new session and acquire controlling terminal
   # We exec a shell that opens console (becoming ctty) and then execs the target
@@ -589,8 +585,8 @@ elif command -v setsid >/dev/null 2>&1; then
   }
 else
   # Option 3: No TTY tools
-  echo "RunCVM-FC init: WARNING - No TTY tools found (cttyhack/setsid)"
-  echo "RunCVM-FC init: Interactive shells may not work correctly"
+  log INFO "WARNING - No TTY tools found (cttyhack/setsid)"
+  log INFO "Interactive shells may not work correctly"
   
   run_with_tty() {
     "$@"
@@ -637,7 +633,7 @@ if is_debug; then
 fi
 
 if [ "$SHOULD_RUN_SYSTEMD" = "1" ] && [ -n "$SYSTEMD_BIN" ]; then
-   echo "RunCVM-FC init: Booting with Systemd ($SYSTEMD_BIN)..."
+   log INFO "Booting with Systemd ($SYSTEMD_BIN)..."
    
    # Systemd requirements:
    # 1. PID 1 (we are)
@@ -661,7 +657,7 @@ if [ "$SHOULD_RUN_SYSTEMD" = "1" ] && [ -n "$SYSTEMD_BIN" ]; then
    fi
    
    if [ -n "$UNSHARE_BIN" ]; then
-       echo "RunCVM-FC init: Starting Systemd in new PID namespace (using $UNSHARE_BIN)..."
+       log INFO "Starting Systemd in new PID namespace (using $UNSHARE_BIN)..."
        
        # Determine TTY handler for new namespace
        TTY_CMD=""
@@ -678,10 +674,10 @@ if [ "$SHOULD_RUN_SYSTEMD" = "1" ] && [ -n "$SYSTEMD_BIN" ]; then
        $UNSHARE_BIN -f -p --mount-proc $TTY_CMD "$SYSTEMD_BIN" --unit=multi-user.target
        
        RET=$?
-       echo "RunCVM-FC init: Systemd exited with code $RET"
+       log INFO "Systemd exited with code $RET"
        busybox poweroff -f
    else
-       echo "RunCVM-FC init: 'unshare' not found, falling back to exec (PID 1)"
+       log INFO "'unshare' not found, falling back to exec (PID 1)"
        # Execute systemd - this REPLACES the init process
        exec "$SYSTEMD_BIN" --unit=multi-user.target
    fi
@@ -694,11 +690,11 @@ if [ -f /.runcvm-entrypoint ] && [ -s /.runcvm-entrypoint ]; then
     set -- "$@" "$line"
   done < /.runcvm-entrypoint
   
-  echo "RunCVM-FC init: Running saved entrypoint: $@"
+  log INFO "Running saved entrypoint: $@"
   run_with_tty "$@"
   
 elif [ -x /docker-entrypoint.sh ]; then
-  echo "RunCVM-FC init: Running /docker-entrypoint.sh"
+  log INFO "Running /docker-entrypoint.sh"
   if [ -f /etc/nginx/nginx.conf ]; then
     run_with_tty /docker-entrypoint.sh nginx -g "daemon off;"
   else
@@ -706,18 +702,18 @@ elif [ -x /docker-entrypoint.sh ]; then
   fi
   
 elif [ -f /etc/nginx/nginx.conf ] && command -v nginx >/dev/null 2>&1; then
-  echo "RunCVM-FC init: Running nginx directly"
+  log INFO "Running nginx directly"
   run_with_tty nginx -g "daemon off;"
   
 else
-  echo "RunCVM-FC init: No entrypoint found, starting shell"
+  log INFO "No entrypoint found, starting shell"
   run_with_tty /bin/sh
 fi
 
 # We should only get here if run_with_tty failed to exec (e.g. command not found)
 # OR if run_with_tty was not an exec (which it is currently)
 RET=$?
-echo "RunCVM-FC init: Entrypoint exited with code $RET"
+log INFO "Entrypoint exited with code $RET"
 busybox poweroff -f
 INITEOF
 
