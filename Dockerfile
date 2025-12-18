@@ -17,9 +17,6 @@ RUN apk update && apk add --no-cache alpine-sdk coreutils && \
     cd ~/aports/ && \
     git sparse-checkout set main/dnsmasq main/dropbear main/mkinitfs main/
 
-# NOTE: SeaBIOS is x86-specific and not needed for ARM64
-# ARM64 uses UEFI boot via QEMU's built-in firmware or EDK2
-
 # --- BUILD STAGE ---
 # Build patched dnsmasq
 # that does not require /etc/passwd file to run
@@ -85,12 +82,6 @@ FROM alpine:$ALPINE_VERSION as binaries
 
 RUN apk update && \
     apk add --no-cache file bash \
-    qemu-system-aarch64 \
-    qemu-virtiofsd \
-    qemu-ui-curses \
-    qemu-guest-agent \
-    qemu-hw-display-virtio-gpu \
-    aavmf \
     jq iproute2 netcat-openbsd socat e2fsprogs e2fsprogs-extra blkid util-linux \
     s6 dnsmasq iptables nftables \
     ncurses coreutils \
@@ -113,8 +104,8 @@ COPY build-utils/make-bundelf-bundle.sh /usr/local/bin/make-bundelf-bundle.sh
 # Changed from qemu-system-x86_64 to qemu-system-aarch64
 # Note: sshfs removed from binaries - using Rust FUSE binaries instead
 # Note: watch from procps is included for proper Ctrl-C handling (busybox watch doesn't handle it)
-ENV BUNDELF_BINARIES="busybox bash jq ip nc socat mke2fs resize2fs debugfs blkid findmnt dnsmasq xtables-legacy-multi nft xtables-nft-multi nft mount s6-applyuidgid qemu-system-aarch64 qemu-ga /usr/lib/qemu/virtiofsd tput coreutils getent dropbear dbclient dropbearkey watch /usr/bin/nsenter /usr/sbin/unfsd /sbin/rpcbind"
-ENV BUNDELF_EXTRA_LIBS="/usr/lib/xtables /usr/libexec/coreutils /tmp/dropbear/libepka_file.so /usr/lib/qemu/*.so /usr/lib/libtirpc*"
+ENV BUNDELF_BINARIES="busybox bash jq ip nc socat mke2fs resize2fs debugfs blkid findmnt dnsmasq xtables-legacy-multi nft xtables-nft-multi nft mount s6-applyuidgid tput coreutils getent dropbear dbclient dropbearkey watch /usr/bin/nsenter /usr/sbin/unfsd /sbin/rpcbind"
+ENV BUNDELF_EXTRA_LIBS="/usr/lib/xtables /usr/libexec/coreutils /tmp/dropbear/libepka_file.so /usr/lib/libtirpc*"
 ENV BUNDELF_EXTRA_SYSTEM_LIB_PATHS="/usr/lib/xtables"
 ENV BUNDELF_CODE_PATH="/opt/runcvm"
 ENV BUNDELF_EXEC_PATH="/.runcvm/guest"
@@ -129,11 +120,7 @@ RUN /usr/local/bin/make-bundelf-bundle.sh --bundle && \
     ln -s busybox $cmd; \
     done && \
     mkdir -p $BUNDELF_CODE_PATH/usr/share && \
-    cp -a /usr/share/qemu $BUNDELF_CODE_PATH/usr/share && \
     cp -a /etc/terminfo $BUNDELF_CODE_PATH/usr/share && \
-    # Copy AAVMF UEFI firmware for ARM64
-    mkdir -p $BUNDELF_CODE_PATH/usr/share/AAVMF && \
-    cp -a /usr/share/AAVMF/* $BUNDELF_CODE_PATH/usr/share/AAVMF/ && \
     # Copy unfs3 (unfsd) binary and ALL its dependencies for NFS volume sync
     mkdir -p $BUNDELF_CODE_PATH/sbin && \
     cp /usr/sbin/unfsd $BUNDELF_CODE_PATH/sbin/unfsd && \
@@ -163,17 +150,6 @@ RUN apk update && \
 
 ADD runcvm-init /root/runcvm-init
 RUN cd /root/runcvm-init && cc -o /root/runcvm-init/runcvm-init -std=gnu99 -static -s -Wall -Werror -O3 dumb-init.c
-
-# --- BUILD STAGE ---
-# Build static qemu-exit for ARM64
-# Note: ARM64 uses PSCI for power control, not x86 I/O ports
-FROM alpine:$ALPINE_VERSION as qemu-exit
-
-RUN apk update && \
-    apk add --no-cache gcc musl-dev linux-headers
-
-ADD qemu-exit /root/qemu-exit
-RUN cd /root/qemu-exit && cc -o /root/qemu-exit/qemu-exit -std=gnu99 -static -s -Wall -Werror -O3 qemu-exit.c
 
 # Note: procps watch is bundled via BUNDELF_BINARIES in the binaries stage above
 # This provides proper Ctrl-C handling unlike busybox watch
@@ -379,7 +355,7 @@ FROM alpine:$ALPINE_VERSION as installer
 
 COPY --from=binaries /opt/runcvm /opt/runcvm
 COPY --from=runcvm-init /root/runcvm-init/runcvm-init /opt/runcvm/sbin/
-COPY --from=qemu-exit /root/qemu-exit/qemu-exit /opt/runcvm/sbin/
+
 COPY --from=firecracker-bin /usr/local/bin/firecracker /opt/runcvm/sbin/
 # Note: procps watch is included in BUNDELF_BINARIES (binaries stage) with its libraries
 # ============================================================================
