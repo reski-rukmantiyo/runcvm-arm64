@@ -428,6 +428,37 @@ docker run --runtime=runcvm \
   ubuntu
 ```
 
+### Dynamic Resource Updates (`docker update`)
+RunCVM supports dynamically updating the resource limits of a running container using `docker update`.
+
+#### Memory Updates
+RunCVM uses **Memory Ballooning** to dynamically adjust the memory available to the guest VM.
+
+*   **Mechanism**: A "balloon" device inside the VM is inflated to consume memory, making it unavailable to other processes. This effectively reduces the usable memory.
+*   **Limitations**:
+    *   You can only **reduce** memory below the initial boot size (specified by `-m` at startup).
+    *   You **cannot increase** memory beyond the initial boot size (because physical RAM slots are fixed at boot).
+    *   If you attempt to set memory > boot memory, the balloon will fully deflate, returning the VM to its maximum original size.
+
+**Example**:
+```bash
+# Start with 1GB
+docker run -d --name myvs --runtime=runcvm -m 1024m nginx
+
+# Reduce to 512MB
+docker update --memory 512m myvm
+
+# Restore to 1GB
+docker update --memory 1024m myvm
+```
+
+#### CPU Updates
+CPU updates behave identically to standard Docker.
+
+*   `docker update --cpus <N>` updates the host Cgroups for the Firecracker VMM process.
+*   This effectively throttles the entire VM's CPU usage to the specified quota.
+*   **Note**: This does not hot-plug/unplug vCPUs inside the guest; it limits the computing power available to them.
+
 ---
 
 ## 8. Advanced Configuration
