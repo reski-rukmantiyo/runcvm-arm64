@@ -1,8 +1,8 @@
 # RunCVM Kubernetes Roadmap (Advanced Integration)
 
-**Last Updated**: December 7, 2025  
+**Last Updated**: December 20, 2025  
 **Prerequisites**: Docker feature parity (ROADMAP-DOCKER.md Phase 3)  
-**Current Status**: QEMU mode production-ready, Firecracker mode not yet started for K8s  
+**Current Status**: QEMU and Firecracker modes functional in K8s (Entrypoint/Exec/Logs verified)  
 **Focus**: Advanced Kubernetes integration with Firecracker hypervisor
 
 ---
@@ -31,10 +31,12 @@ This roadmap covers **advanced Kubernetes integration** with RunCVM Firecracker 
 - Interactive exec (`kubectl exec -it`)
 - ConfigMaps and Secrets (basic)
 
-**Firecracker + Kubernetes**: 🚫 Not Started
-- Blocked by Docker feature parity
-- Requires storage/volume support
-- Needs K8s-specific testing
+**Firecracker + Kubernetes**: 🔄 In Progress
+- ✅ Basic pod networking
+- ✅ Entrypoint injection alignment
+- ✅ kubectl exec compatibility
+- ✅ kubectl logs visibility
+- 🔄 Persistence / Volumes consolidation
 
 ---
 
@@ -75,12 +77,12 @@ Before starting Kubernetes integration with Firecracker, we need:
 
 | Feature | QEMU | Firecracker | Status | Depends On |
 |---------|------|-------------|--------|------------|
-| **Basic Pod** | ✅ | 🚫 | Not Started | Docker Phase 3 |
-| **Multi-container Pod** | ✅ | 🚫 | Not Started | Docker Phase 3 |
-| **Init containers** | ✅ | 🚫 | Not Started | Docker Phase 3 |
-| **Sidecar containers** | ✅ | 🚫 | Not Started | Docker Phase 3 |
-| **kubectl exec** | ✅ | 🚫 | Not Started | Docker Phase 3 |
-| **kubectl logs** | ✅ | 🚫 | Not Started | Docker Phase 3 |
+| **Basic Pod** | ✅ | ✅ | Functional | |
+| **Multi-container Pod** | ✅ | 🚫 | Not Started | |
+| **Init containers** | ✅ | 🚫 | Not Started | |
+| **Sidecar containers** | ✅ | 🚫 | Not Started | |
+| **kubectl exec** | ✅ | ✅ | Functional | |
+| **kubectl logs** | ✅ | ✅ | Functional | |
 | **kubectl attach** | ✅ | 🚫 | Not Started | Docker Phase 3 |
 | **kubectl port-forward** | ✅ | 🚫 | Not Started | Docker Phase 3 |
 
