@@ -82,7 +82,7 @@ _T "mount remount"
 # FIXME: Something is making /.runcvm ro, so remount it rw
 # until such time as exit code handling and dropbear key creation
 # obviate the need for this.
-mount -o remount,rw /.runcvm || true
+# mount -o remount,rw /.runcvm || true
 _T "mount runc-vm"
 
 # Alpine initrd doesn't configure /dev device permissions and ownership

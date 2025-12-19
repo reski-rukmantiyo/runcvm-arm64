@@ -7,7 +7,8 @@
 # This avoids the self-copy problem where mke2fs would copy the rootfs into itself
 
 set -o errexit -o pipefail
-# set -x # Debug tracing disabled for production speed
+set -o errexit -o pipefail
+set -x # Debug tracing disabled for production speed
 
 # Load original environment
 unset RUNCVM_LOG_LEVEL
@@ -56,6 +57,9 @@ main() {
 
 
   setup_nfs_volumes
+  
+  log "DEBUG: Content of /.runcvm on host:"
+  ls -la /.runcvm | while read line; do log "  $line"; done
 
   log_debug "NFS_CONFIG=$NFS_CONFIG"
   if [ -f "$NFS_CONFIG" ]; then
@@ -156,11 +160,20 @@ main() {
     # INJECT CURRENT ENTRYPOINT
     # The cached rootfs has a stale entrypoint. We must overwrite it with the current one.
     if command -v debugfs >/dev/null 2>&1 && [ -f "$entrypoint_file" ]; then
-       # Run debugfs to update entrypoint (surpress output unless error)
-       debugfs -w -R "rm /.runcvm-entrypoint" "$rootfs_path" >/dev/null 2>&1 || true
-       if ! debugfs -w -R "write $entrypoint_file /.runcvm-entrypoint" "$rootfs_path" >/dev/null 2>&1; then
-          log "  [WARNING] Failed to update entrypoint in rootfs"
+       log "Injecting entrypoint: $entrypoint_file -> /.runcvm/entrypoint"
+       
+       # Ensure /.runcvm directory exists
+       if ! debugfs -w -R "mkdir /.runcvm" "$rootfs_path"; then
+          log "  [WARNING] Failed to mkdir /.runcvm in rootfs"
        fi
+
+       # Run debugfs to update entrypoint (surpress output unless error)
+       debugfs -w -R "rm /.runcvm/entrypoint" "$rootfs_path" || true
+       if ! debugfs -w -R "write $entrypoint_file /.runcvm/entrypoint" "$rootfs_path"; then
+          log "  [ERROR] Failed to update entrypoint in rootfs"
+       fi
+    else
+        log "[WARNING] Skipping entrypoint injection. debugfs=$(command -v debugfs), file=$entrypoint_file (exists? $([ -f "$entrypoint_file" ] && echo yes || echo no))"
     fi
     
     # INJECT FRESH PRIVATE KEY (CRITICAL so init script derives correct pubkey)
