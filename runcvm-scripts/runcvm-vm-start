@@ -56,6 +56,11 @@ additionalGids=$(echo "$RUNCVM_UIDGID" | cut -d: -f3-)
 
 echo "[VM-START] Parsed: uid=$uid gid=$gid additionalGids=$additionalGids" > /dev/console
 
+echo "[VM-START] Debug: Listing /" > /dev/console
+ls -la / > /dev/console
+echo "[VM-START] Debug: Listing /.runcvm" > /dev/console
+ls -la /.runcvm > /dev/console
+
 # Load original entrypoint (POSIX compliant)
 if [ -f /.runcvm/entrypoint ]; then
   set --

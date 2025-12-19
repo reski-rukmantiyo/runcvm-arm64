@@ -43,6 +43,15 @@ RUNCVM_LOG_STDERR=1  # Enable stderr logging
 . "$RUNCVM_GUEST/scripts/docker/firecracker-config.sh"
 . "$RUNCVM_GUEST/scripts/docker/firecracker-init.sh"
 
+# EARLY DEBUG
+log "DEBUG: Global scope /.runcvm check:"
+ls -la /.runcvm | while read line; do log "  $line"; done
+if [ -f /.runcvm/entrypoint ]; then
+    log "DEBUG: /.runcvm/entrypoint exists globally"
+else
+    log "DEBUG: /.runcvm/entrypoint MISSING globally"
+fi
+
 
 # Main function
 main() {
@@ -836,6 +845,11 @@ DBUNITEOF
     busybox rm -rf "$staging_dir"
     error "Insufficient disk space on overlay (need ${rootfs_size}MB, have ${overlay_avail}MB)"
   fi
+  
+  log "DEBUG: Verifying staging directory ($staging_dir) before rootfs creation:"
+  ls -la "$staging_dir" | while read line; do log "  $line"; done
+  log "DEBUG: Verifying staging /.runcvm content:"
+  ls -la "$staging_dir/.runcvm" | while read line; do log "  $line"; done
   
   # Create rootfs from staging directory
   log "  Source: $staging_dir"  
