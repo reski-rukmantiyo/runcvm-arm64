@@ -80,7 +80,7 @@ _EOE_
 fi
 
 echo "[GUEST-INIT] Starting dropbear on port $SSHD_PORT..." > /dev/console
-$RUNCVM_GUEST/usr/sbin/dropbear -REF -p $SSHD_PORT -A $RUNCVM_GUEST/tmp/dropbear/libepka_file.so,/.runcvm/dropbear/epka.json -P /.runcvm/dropbear/dropbear.pid &>/dev/console &
+$RUNCVM_GUEST/usr/sbin/dropbear -REF -p $SSHD_PORT -A $RUNCVM_GUEST/tmp/dropbear/libepka_file.so,/.runcvm/dropbear/epka.json -P /.runcvm/dropbear/dropbear.pid >/dev/console 2>&1 &
 echo "[GUEST-INIT] Dropbear started (PID: $!)" > /dev/console
 
 # ====================================================
@@ -325,7 +325,7 @@ _EOE_
   rm -f /.runcvm/once
 
   # Clear the environment, and run our own init, disconnecting stdout and stderr from terminal
-  exec $RUNCVM_GUEST/bin/init &>/dev/null
+  exec $RUNCVM_GUEST/bin/init >/dev/null 2>&1
 else
   # If not, assume the user knows what they're doing: launch qemu-ga and just run their entrypoint.
 
@@ -333,7 +333,7 @@ else
   clean_env
 
   # Run the qemu guest agent, needed to support future functionality
-  $RUNCVM/scripts/runcvm-vm-qemu-ga &>/dev/null &
+  $RUNCVM/scripts/runcvm-vm-qemu-ga >/dev/null 2>&1 &
 
   echo "[GUEST-INIT] Dropbear should be already running." > /dev/console
 
@@ -341,7 +341,7 @@ else
 
   # Run init from the image
   # Pipe input/output from/to console device
-  exec </dev/$CONSOLE_DEVICE &>/dev/$CONSOLE_DEVICE
+  exec >/dev/$CONSOLE_DEVICE 2>&1
   
   # Invoke runcvm-init with --no-fork purely to create controlling tty,
   # then exec runcvm-vm-start

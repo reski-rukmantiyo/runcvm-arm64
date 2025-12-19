@@ -74,13 +74,19 @@ EOF
   # -n = NFS port
   # -m = mount port
   # Check for unfsd binary
-  if [ ! -x "/usr/local/sbin/unfsd" ]; then
-     log "ERROR: unfsd binary not found at /usr/local/sbin/unfsd."
+  # Check for unfsd binary
+  local unfsd_bin=""
+  if [ -x "/usr/sbin/unfsd" ]; then
+    unfsd_bin="/usr/sbin/unfsd"
+  elif [ -x "/usr/local/sbin/unfsd" ]; then
+    unfsd_bin="/usr/local/sbin/unfsd"
+  else
+     log "ERROR: unfsd binary not found at /usr/sbin/unfsd or /usr/local/sbin/unfsd."
      log "       Please install unfs3 on the host (or disable NFS)."
      return 1
   fi
 
-  /usr/local/sbin/unfsd -d -e "$exports_file" -n "$port" -m "$((port+1))" \
+  "$unfsd_bin" -d -e "$exports_file" -n "$port" -m "$((port+1))" \
     > "$log_file" 2>&1 &
   
   local pid=$!

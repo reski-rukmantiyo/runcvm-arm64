@@ -87,7 +87,8 @@ RUN apk update && \
     ncurses coreutils \
     procps \
     patchelf \
-    unfs3
+    unfs3 \
+    zstd-libs
 # Note: unfs3+rpcbind added for NFS volume sync
 
 # Install patched dnsmasq
@@ -112,6 +113,8 @@ ENV BUNDELF_EXEC_PATH="/.runcvm/guest"
 
 RUN /usr/local/bin/make-bundelf-bundle.sh --bundle && \
     mkdir -p $BUNDELF_CODE_PATH/bin && \
+    ls -l $BUNDELF_CODE_PATH/bin/busybox && \
+    ldd $BUNDELF_CODE_PATH/bin/busybox && \
     cd $BUNDELF_CODE_PATH/bin && \
     for cmd in \
     uname mkdir rmdir cp mv free awk sleep base64 cat chgrp chmod cut grep head hostname init ln ls \
@@ -129,8 +132,8 @@ RUN /usr/local/bin/make-bundelf-bundle.sh --bundle && \
     for lib in $(ldd /usr/sbin/unfsd 2>/dev/null | grep "=>" | awk '{print $3}' | grep -v "^$"); do \
     cp -n "$lib" $BUNDELF_CODE_PATH/lib/ 2>/dev/null || true; \
     done && \
-    # Also copy transitive dependencies for the libs we just copied
-    for lib in $BUNDELF_CODE_PATH/lib/libtirpc*; do \
+    # Also copy transitive dependencies for ALL libs we just copied
+    for lib in $BUNDELF_CODE_PATH/lib/*; do \
     for dep in $(ldd "$lib" 2>/dev/null | grep "=>" | awk '{print $3}' | grep -v "^$"); do \
     cp -n "$dep" $BUNDELF_CODE_PATH/lib/ 2>/dev/null || true; \
     done; \

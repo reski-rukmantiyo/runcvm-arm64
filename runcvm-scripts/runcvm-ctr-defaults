@@ -29,7 +29,13 @@ _log() {
   local severity="$1"
   shift
   local message="$*"
-  local severity_level="${LOG_LEVELS[$severity]:-1}"
+  local severity_level=999
+  
+  case "$severity" in
+    DEBUG) severity_level=0 ;;
+    INFO|LOG) severity_level=1 ;;
+    ERROR) severity_level=2 ;;
+  esac
   
   # Only log if severity meets threshold
   if [ "$severity_level" -ge "$CURRENT_LOG_LEVEL" ]; then
@@ -89,8 +95,16 @@ load_network() {
 
 which() {
   local cmd="$1"
-  local WHICH_PATH="${RUNCVM_PATH//:/ }" # Replace ':' with ' '
-  for p in $WHICH_PATH; do [ -x "$p/$cmd" ] && echo "$p/$cmd" && return 0; done
+  local old_ifs="$IFS"
+  IFS=':'
+  set -- $RUNCVM_PATH
+  IFS="$old_ifs"
+  for p do
+    if [ -x "$p/$cmd" ]; then
+      echo "$p/$cmd"
+      return 0
+    fi
+  done
   return 1
 }
 
@@ -101,13 +115,14 @@ create_aliases() {
       jq \
       dnsmasq \
       blkid findmnt getent mke2fs resize2fs mount nc ping socat \
-      xtables-nft-multi xtables-legacy-multi \
       dbclient dropbear dropbearkey \
-      s6-applyuidgid \
       tput \
       debugfs
   do
-    eval "$cmd() { $(which $cmd) \"\$@\"; }"
+    local cmd_path
+    if cmd_path=$(which "$cmd"); then
+      eval "$cmd() { $cmd_path \"\$@\"; }"
+    fi
   done
 }
 
