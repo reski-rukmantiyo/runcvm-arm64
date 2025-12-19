@@ -243,15 +243,15 @@ else
   # This matches the host-side runcvm-vsock-connect handshake.
   if command -v socat >/dev/null 2>&1; then
       echo "[GUEST-INIT] Starting VSOCK listener on port 22..." > /dev/console
-      socat VSOCK-LISTEN:22,fork TCP:127.0.0.1:$SSHD_PORT &>/dev/null &
+      socat VSOCK-LISTEN:22,fork TCP:127.0.0.1:$SSHD_PORT >> /dev/console 2>&1 &
   else
       # If socat is not in PATH, try finding it in common locations or RUNCVM_GUEST
       if [ -x "$RUNCVM_GUEST/bin/socat" ]; then
          echo "[GUEST-INIT] Starting VSOCK listener on port 22 (via $RUNCVM_GUEST/bin/socat)..." > /dev/console
-         "$RUNCVM_GUEST/bin/socat" VSOCK-LISTEN:22,fork TCP:127.0.0.1:$SSHD_PORT &>/dev/null &
+         "$RUNCVM_GUEST/bin/socat" VSOCK-LISTEN:22,fork TCP:127.0.0.1:$SSHD_PORT >> /dev/console 2>&1 &
       elif [ -x "$RUNCVM_GUEST/usr/bin/socat" ]; then
          echo "[GUEST-INIT] Starting VSOCK listener on port 22 (via $RUNCVM_GUEST/usr/bin/socat)..." > /dev/console
-         "$RUNCVM_GUEST/usr/bin/socat" VSOCK-LISTEN:22,fork TCP:127.0.0.1:$SSHD_PORT &>/dev/null &
+         "$RUNCVM_GUEST/usr/bin/socat" VSOCK-LISTEN:22,fork TCP:127.0.0.1:$SSHD_PORT >> /dev/console 2>&1 &
       else
          echo "[GUEST-INIT] WARNING: socat not found, VSOCK exec will not work" > /dev/console
       fi

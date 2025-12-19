@@ -23,11 +23,18 @@ fi
 # NOTE: We use `socat` with `STDIO` to connect this script's stdin/stdout to the socket.
 # But we need to inject the handshake.
 
+# Detect socat
 if command -v socat >/dev/null 2>&1; then
-    # Inject handshake then switch to transparent forwarding
-    { printf "CONNECT %s\n" "$PORT"; cat; } | socat UNIX-CONNECT:"$UDS_PATH" -
+    SOCAT_BIN="socat"
+elif [ -x "/.runcvm/guest/usr/bin/socat" ]; then
+    SOCAT_BIN="/.runcvm/guest/usr/bin/socat"
 else
-    # Fallback if socat is missing (unlikely if we are here)
+    # Fallback if socat is missing
     echo "Error: socat not found" >&2
     exit 1
+fi
+
+# Inject handshake then switch to transparent forwarding
+{ printf "CONNECT %s\n" "$PORT"; cat; } | $SOCAT_BIN UNIX-CONNECT:"$UDS_PATH" -
+
 fi

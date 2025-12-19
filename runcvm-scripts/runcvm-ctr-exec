@@ -186,7 +186,20 @@ if [ "$USE_VSOCK" = "1" ]; then
    PROXY_PORT=$(( 30000 + RANDOM % 10000 ))
    
    # Start socat proxy: TCP-LISTEN -> EXEC:runcvm-vsock-connect
-   socat TCP-LISTEN:$PROXY_PORT,bind=127.0.0.1,fork,reuseaddr EXEC:"$RUNCVM_GUEST/scripts/runcvm-vsock-connect /run/firecracker.vsock 22" 2>/dev/null &
+   # Detect socat
+   SOCAT_BIN="socat"
+   if ! command -v socat >/dev/null 2>&1; then
+      if [ -x "/.runcvm/guest/usr/bin/socat" ]; then
+         SOCAT_BIN="/.runcvm/guest/usr/bin/socat"
+      else
+         echo "Error: socat not found for VSOCK transport" >&2
+         exit 1
+      fi
+   fi
+
+   # Start socat proxy: TCP-LISTEN -> EXEC:runcvm-vsock-connect
+   # We remove 2>/dev/null to see errors in runcvm.debug or kubectl logs
+   $SOCAT_BIN TCP-LISTEN:$PROXY_PORT,bind=127.0.0.1,fork,reuseaddr EXEC:"$RUNCVM_GUEST/scripts/runcvm-vsock-connect /run/firecracker.vsock 22" &
    PROXY_PID=$!
    
    # Cleanup proxy on exit
