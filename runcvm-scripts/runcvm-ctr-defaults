@@ -15,16 +15,14 @@ SSHD_PORT=22222
 RUNCVM_LOG_LEVEL="${RUNCVM_LOG_LEVEL:-OFF}"
 
 # Log severity levels (numeric for comparison)
-declare -A LOG_LEVELS=(
-  [DEBUG]=0
-  [INFO]=1
-  [LOG]=1      # Alias for INFO
-  [ERROR]=2
-  [OFF]=999
-)
-
-# Get numeric level for current log level (default to OFF=999)
-CURRENT_LOG_LEVEL="${LOG_LEVELS[$RUNCVM_LOG_LEVEL]:-999}"
+# Log severity levels (numeric for comparison)
+# Replaced associative array with POSIX sh case statement
+case "$RUNCVM_LOG_LEVEL" in
+  DEBUG) CURRENT_LOG_LEVEL=0 ;;
+  INFO|LOG) CURRENT_LOG_LEVEL=1 ;;
+  ERROR) CURRENT_LOG_LEVEL=2 ;;
+  OFF|*) CURRENT_LOG_LEVEL=999 ;;
+esac
 
 # Core logging function
 _log() {

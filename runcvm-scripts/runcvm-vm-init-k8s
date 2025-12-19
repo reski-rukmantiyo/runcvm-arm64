@@ -1,8 +1,11 @@
-
-
+#!/bin/sh
 # set -x
 
 # CRITICAL DEBUG: Prove this script is being called
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mkdir -p /dev/pts
+mount -t devpts devpts /dev/pts
 echo "========================================" > /dev/console
 echo "K8S VM-INIT STARTING NOW!" > /dev/console
 echo "========================================" > /dev/console
@@ -13,6 +16,32 @@ debug_time() {
 }
 debug_time "vm-init started"
 
+# === EARLY VSOCK LISTENER START ===
+# Start VSOCK backdoor immediately to allow debugging even if init fails later
+(
+  export PATH="/.runcvm/guest/bin:/.runcvm/guest/usr/bin:$PATH"
+  echo "[GUEST-INIT] Starting EARLY VSOCK listener on port 22..." > /dev/console
+  
+  SOCAT=""
+  # Prioritize STATIC socat to avoid library dependency issues in foreign images
+  if [ -x "/.runcvm/guest/bin/socat-static" ]; then SOCAT="/.runcvm/guest/bin/socat-static"
+  elif command -v socat >/dev/null 2>&1; then SOCAT=socat
+  elif [ -x "/.runcvm/guest/bin/socat" ]; then SOCAT="/.runcvm/guest/bin/socat"
+  elif [ -x "/.runcvm/guest/usr/bin/socat" ]; then SOCAT="/.runcvm/guest/usr/bin/socat"
+  fi
+
+  if [ -n "$SOCAT" ]; then
+     # Wait for dropbear (optional, socat will retry or we can loop)
+     # Actually for now allow it to fail to connect to 22222, but keep listener open.
+     # Or better use retry loop.
+     $SOCAT VSOCK-LISTEN:22,fork TCP:127.0.0.1:22222,retry=10,interval=1 >> /dev/console 2>&1 &
+     echo "[GUEST-INIT] EARLY VSOCK listener started (PID $!)" > /dev/console
+  else
+     echo "[GUEST-INIT] WARNING: socat not found for EARLY VSOCK" > /dev/console
+  fi
+) &
+# ==================================
+
 # Boot timing profiler
 _T() { 
   local t=$(cat /proc/uptime | cut -d' ' -f1)
@@ -21,6 +50,8 @@ _T() {
 _T "vm-init-start"
 
 # Load original environment
+# Sanitize config to be POSIX compliant (replace bash 'declare -x' with 'export')
+sed -i 's/^declare -x/export/g' /.runcvm/config 2>/dev/null || true
 . /.runcvm/config
 _T "config-loaded"
 
@@ -238,24 +269,7 @@ else
   dropbear -REF -p $SSHD_PORT -A $RUNCVM_GUEST/tmp/dropbear/libepka_file.so,/.runcvm/dropbear/epka.json -P /.runcvm/dropbear/dropbear.pid &>/dev/null &
   echo "[GUEST-INIT] Dropbear started (PID: $!)" > /dev/console
 
-  # VSOCK LISTENER FOR EXEC
-  # Forward VSOCK Port 22 -> Local Port 22222 (SSH)
-  # This matches the host-side runcvm-vsock-connect handshake.
-  if command -v socat >/dev/null 2>&1; then
-      echo "[GUEST-INIT] Starting VSOCK listener on port 22..." > /dev/console
-      socat VSOCK-LISTEN:22,fork TCP:127.0.0.1:$SSHD_PORT >> /dev/console 2>&1 &
-  else
-      # If socat is not in PATH, try finding it in common locations or RUNCVM_GUEST
-      if [ -x "$RUNCVM_GUEST/bin/socat" ]; then
-         echo "[GUEST-INIT] Starting VSOCK listener on port 22 (via $RUNCVM_GUEST/bin/socat)..." > /dev/console
-         "$RUNCVM_GUEST/bin/socat" VSOCK-LISTEN:22,fork TCP:127.0.0.1:$SSHD_PORT >> /dev/console 2>&1 &
-      elif [ -x "$RUNCVM_GUEST/usr/bin/socat" ]; then
-         echo "[GUEST-INIT] Starting VSOCK listener on port 22 (via $RUNCVM_GUEST/usr/bin/socat)..." > /dev/console
-         "$RUNCVM_GUEST/usr/bin/socat" VSOCK-LISTEN:22,fork TCP:127.0.0.1:$SSHD_PORT >> /dev/console 2>&1 &
-      else
-         echo "[GUEST-INIT] WARNING: socat not found, VSOCK exec will not work" > /dev/console
-      fi
-  fi
+
 
   # Run init from the image
   # Pipe input/output from/to console device

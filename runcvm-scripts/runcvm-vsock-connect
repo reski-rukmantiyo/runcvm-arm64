@@ -1,7 +1,6 @@
 #!/bin/sh
 # runcvm-vsock-connect
-# Connect to Firecracker VSOCK UDS and perform handshake
-# Usage: runcvm-vsock-connect <uds_path> <port>
+# Connects to Firecracker UDS, handles handshake, and forwards IO unbuffered.
 
 UDS_PATH="$1"
 PORT="$2"
@@ -11,30 +10,38 @@ if [ -z "$UDS_PATH" ] || [ -z "$PORT" ]; then
   exit 1
 fi
 
-# Handshake: "CONNECT <port>\n"
-# We pipe this handshake into the socket, followed by stdin (for the actual connection data).
-# We rely on socat to bidirectionally forward stdin/stdout to the socket.
-# The handshake must be the FIRST thing sent.
-
-# Using { printf...; cat; } | socat ... works for sending TO the socket.
-# But socat also sends FROM the socket to stdout.
-# The `cat` reads from this script's stdin (which is the client's data).
-
-# NOTE: We use `socat` with `STDIO` to connect this script's stdin/stdout to the socket.
-# But we need to inject the handshake.
-
 # Detect socat
 if command -v socat >/dev/null 2>&1; then
     SOCAT_BIN="socat"
 elif [ -x "/.runcvm/guest/usr/bin/socat" ]; then
     SOCAT_BIN="/.runcvm/guest/usr/bin/socat"
 else
-    # Fallback if socat is missing
     echo "Error: socat not found" >&2
     exit 1
 fi
 
-# Inject handshake then switch to transparent forwarding
-{ printf "CONNECT %s\n" "$PORT"; cat; } | $SOCAT_BIN UNIX-CONNECT:"$UDS_PATH" -
+# Pipeline Explanation:
+# 1. Input: { Handshake + Client Data (unbuffered via socat) }
+# 2. Connection: socat connects to UDS
+# 3. Output: { Read "OK" line + Server Data (unbuffered via socat) }
 
-fi
+{ printf "CONNECT %s\n" "$PORT"; $SOCAT_BIN -u STDIN -; } | \
+$SOCAT_BIN UNIX-CONNECT:"$UDS_PATH" - | \
+{
+    # Read the first line (Handshake response "OK <port>")
+    # 'read' reads byte-by-byte on pipes in widely used shells (busybox ash, bash)
+    # effectively not over-reading.
+    IFS= read -r line
+    
+    # Check if handshake successful
+    case "$line" in
+        OK*) 
+            # Handshake OK. Forward the rest of the stream unbuffered.
+            $SOCAT_BIN -u STDIN STDOUT
+            ;;
+        *)
+            echo "Error: Firecracker Handshake Failed: $line" >&2
+            exit 1
+            ;;
+    esac
+}

@@ -825,7 +825,7 @@ fi # End Cache Miss/No Cache logic
   
   # Build boot arguments - use /init which we created in the rootfs
   # Note: 9p.debug=0xff enables verbose 9P logging to debug transport issues
-  local boot_args="init=/init console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw"
+  local boot_args="init=/.runcvm/guest/scripts/runcvm-vm-init-k8s console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw"
   if [ -n "$RUNCVM_KERNEL_ARGS" ]; then
       boot_args="$boot_args $RUNCVM_KERNEL_ARGS"
   fi
@@ -1229,6 +1229,8 @@ fi # End Cache Miss/No Cache logic
 
   # Create Firecracker config file
   # Create Firecracker config file
+
+
   generate_firecracker_config \
     "$kernel_path" \
     "$boot_args" \
