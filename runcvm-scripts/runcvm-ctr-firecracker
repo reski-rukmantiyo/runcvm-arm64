@@ -56,10 +56,17 @@ main() {
   
 
 
+  log "DEBUG: Script Arguments (\$@): $@"
+  
   setup_nfs_volumes
   
   log "DEBUG: Content of /.runcvm on host:"
   ls -la /.runcvm | while read line; do log "  $line"; done
+  
+  if [ -f /.runcvm/config ]; then
+      log "DEBUG: Content of /.runcvm/config:"
+      busybox cat /.runcvm/config | while read line; do log "  $line"; done
+  fi
 
   log_debug "NFS_CONFIG=$NFS_CONFIG"
   if [ -f "$NFS_CONFIG" ]; then
@@ -326,8 +333,10 @@ main() {
   
   # Save the original entrypoint if we have it
   if [ -f "$entrypoint_file" ]; then
-    busybox cp "$entrypoint_file" "${staging_dir}/.runcvm-entrypoint"
-    log "  Saved entrypoint: $(busybox head -1 ${staging_dir}/.runcvm-entrypoint)"
+    # Ensure directory exists (it should, from step 1b/network tools, but be safe)
+    busybox mkdir -p "${staging_dir}/.runcvm"
+    busybox cp "$entrypoint_file" "${staging_dir}/.runcvm/entrypoint"
+    log "  Saved entrypoint: $(busybox head -1 ${staging_dir}/.runcvm/entrypoint)"
   fi
   
   # Copy essential networking tools from RunCVM guest
@@ -590,12 +599,12 @@ VMEXECEOF
 # Wrapper to run the container entrypoint under systemd
 set -e
 
-if [ -f /.runcvm-entrypoint ]; then
+if [ -f /.runcvm/entrypoint ]; then
   # Read entrypoint line by line into arg array
   set --
   while IFS= read -r line || [ -n "$line" ]; do
     set -- "$@" "$line"
-  done < /.runcvm-entrypoint
+  done < /.runcvm/entrypoint
    
   echo "RunCVM: Starting entrypoint: $@"
   
