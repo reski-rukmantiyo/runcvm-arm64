@@ -16,6 +16,23 @@ debug_time() {
 }
 debug_time "vm-init started"
 
+# Load original environment
+# Sanitize config to be POSIX compliant (replace bash 'declare -x' with 'export')
+sed -i 's/^declare -x/export/g' /.runcvm/config 2>/dev/null || true
+. /.runcvm/config
+_T "config-loaded"
+
+# Load defaults and aliases
+. $RUNCVM_GUEST/scripts/runcvm-ctr-defaults
+_T "defaults-loaded"
+
+# Bring up local interface IMMEDIATELY
+ip link set lo up
+_T "lo up"
+
+# Load port from config or default
+SSHD_PORT="${SSHD_PORT:-22222}"
+
 # === EARLY VSOCK LISTENER START ===
 # Start VSOCK backdoor immediately to allow debugging even if init fails later
 (
@@ -68,22 +85,11 @@ if [ ! -f /.runcvm/dropbear/key ]; then
 _EOE_
 fi
 
-# Load port from config or default
-SSHD_PORT="${SSHD_PORT:-22222}"
 echo "[GUEST-INIT] Starting dropbear on port $SSHD_PORT..." > /dev/console
-dropbear -REF -p $SSHD_PORT -A $RUNCVM_GUEST/tmp/dropbear/libepka_file.so,/.runcvm/dropbear/epka.json -P /.runcvm/dropbear/dropbear.pid &>/dev/null &
+$RUNCVM_GUEST/usr/sbin/dropbear -REF -p $SSHD_PORT -A $RUNCVM_GUEST/tmp/dropbear/libepka_file.so,/.runcvm/dropbear/epka.json -P /.runcvm/dropbear/dropbear.pid &>/dev/console &
 echo "[GUEST-INIT] Dropbear started (PID: $!)" > /dev/console
+
 # ====================================================
-
-# Load original environment
-# Sanitize config to be POSIX compliant (replace bash 'declare -x' with 'export')
-sed -i 's/^declare -x/export/g' /.runcvm/config 2>/dev/null || true
-. /.runcvm/config
-_T "config-loaded"
-
-# Load defaults and aliases
-. $RUNCVM_GUEST/scripts/runcvm-ctr-defaults
-_T "defaults-loaded"
 
 # Alpine initrd doesn't honour command-line rw flag
 mount -o remount,rw /
