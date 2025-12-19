@@ -1,0 +1,33 @@
+#!/bin/sh
+# runcvm-vsock-connect
+# Connect to Firecracker VSOCK UDS and perform handshake
+# Usage: runcvm-vsock-connect <uds_path> <port>
+
+UDS_PATH="$1"
+PORT="$2"
+
+if [ -z "$UDS_PATH" ] || [ -z "$PORT" ]; then
+  echo "Usage: $0 <uds_path> <port>" >&2
+  exit 1
+fi
+
+# Handshake: "CONNECT <port>\n"
+# We pipe this handshake into the socket, followed by stdin (for the actual connection data).
+# We rely on socat to bidirectionally forward stdin/stdout to the socket.
+# The handshake must be the FIRST thing sent.
+
+# Using { printf...; cat; } | socat ... works for sending TO the socket.
+# But socat also sends FROM the socket to stdout.
+# The `cat` reads from this script's stdin (which is the client's data).
+
+# NOTE: We use `socat` with `STDIO` to connect this script's stdin/stdout to the socket.
+# But we need to inject the handshake.
+
+if command -v socat >/dev/null 2>&1; then
+    # Inject handshake then switch to transparent forwarding
+    { printf "CONNECT %s\n" "$PORT"; cat; } | socat UNIX-CONNECT:"$UDS_PATH" -
+else
+    # Fallback if socat is missing (unlikely if we are here)
+    echo "Error: socat not found" >&2
+    exit 1
+fi

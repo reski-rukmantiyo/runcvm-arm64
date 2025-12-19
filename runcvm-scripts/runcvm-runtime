@@ -2,7 +2,7 @@
 
 # DEBUG: Global Log Redirect
 exec >>/var/log/runcvm.debug 2>&1
-set -x
+# set -x
 echo "=========================================="
 echo "RunCVM Runtime invoked at $(date)"
 echo "ARGS: $@"

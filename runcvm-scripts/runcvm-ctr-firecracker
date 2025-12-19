@@ -1217,10 +1217,10 @@ fi # End Cache Miss/No Cache logic
   log INFO "=== END FIRECRACKER CONFIG ==="
 
   # Verify vsock is in config
-  if busybox grep -q "vsock-device" "$FIRECRACKER_CONFIG"; then
-    log "✓ vsock-device is PRESENT in Firecracker config"
+  if busybox grep -q "\"vsock\"" "$FIRECRACKER_CONFIG"; then
+    log "✓ vsock is PRESENT in Firecracker config"
   else
-    log "✗ vsock-device is MISSING from Firecracker config!"
+    log "✗ vsock is MISSING from Firecracker config!"
   fi
 
   # ============================================================
