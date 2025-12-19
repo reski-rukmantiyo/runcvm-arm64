@@ -10,11 +10,12 @@ echo "========================================" > /dev/console
 echo "K8S VM-INIT STARTING NOW!" > /dev/console
 echo "========================================" > /dev/console
 
-# DEBUG TIMING
-debug_time() {
-  echo "TIMING: $1 at $(cat /proc/uptime | cut -d' ' -f1)s" >> /.runcvm/boot-timing.log
+# Boot timing profiler
+_T() { 
+  local t=$(cat /proc/uptime | cut -d' ' -f1)
+  echo "$t $1" >> /.runcvm/timing.log
 }
-debug_time "vm-init started"
+_T "vm-init-start"
 
 # Load original environment
 # Sanitize config to be POSIX compliant (replace bash 'declare -x' with 'export')
@@ -57,13 +58,6 @@ SSHD_PORT="${SSHD_PORT:-22222}"
   fi
 ) &
 # ==================================
-
-# Boot timing profiler
-_T() { 
-  local t=$(cat /proc/uptime | cut -d' ' -f1)
-  echo "$t $1" >> /.runcvm/timing.log
-}
-_T "vm-init-start"
 
 # === DROPBEAR SSH (Started Early for VSOCK Access) ===
 _T "starting dropbear"
