@@ -32,9 +32,8 @@ debug_time "vm-init started"
 
   if [ -n "$SOCAT" ]; then
      # Wait for dropbear (optional, socat will retry or we can loop)
-     # Actually for now allow it to fail to connect to 22222, but keep listener open.
-     # Or better use retry loop.
-     $SOCAT VSOCK-LISTEN:22,fork TCP:127.0.0.1:22222,retry=10,interval=1 >> /dev/console 2>&1 &
+     # Retry added to allow Dropbear time to start up.
+     $SOCAT VSOCK-LISTEN:22,fork TCP:127.0.0.1:22222,retry=20,interval=0.5 >> /dev/console 2>&1 &
      echo "[GUEST-INIT] EARLY VSOCK listener started (PID $!)" > /dev/console
   else
      echo "[GUEST-INIT] WARNING: socat not found for EARLY VSOCK" > /dev/console
