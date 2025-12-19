@@ -875,6 +875,13 @@ DBUNITEOF
   local final_size=$(busybox du -sm "$rootfs_path" 2>/dev/null | busybox cut -f1)
   log "  Rootfs ready: ${final_size}MB (created in ${mke2fs_time}s)"
 
+  # if command -v debugfs >/dev/null 2>&1; then
+  #    log "DEBUG: Checking rootfs content using debugfs:"
+  #    debugfs -R "ls -l /" "$rootfs_path" | while read line; do log "  $line"; done
+  #    log "DEBUG: Checking /.runcvm content in rootfs:"
+  #    debugfs -R "ls -l /.runcvm" "$rootfs_path" | while read line; do log "  $line"; done
+  # fi
+
   # CACHE UPDATE (Save SMALL image)
   if [ "$use_cache" = "1" ]; then
      log "Updating cache: $cache_file"
