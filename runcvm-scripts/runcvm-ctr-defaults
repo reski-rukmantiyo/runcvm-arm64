@@ -29,7 +29,14 @@ _log() {
   local severity="$1"
   shift
   local message="$*"
-  local severity_level="${LOG_LEVELS[$severity]:-1}"
+  local severity_level=999
+  
+  case "$severity" in
+    DEBUG) severity_level=0 ;;
+    INFO|LOG) severity_level=1 ;;
+    ERROR) severity_level=2 ;;
+    *) severity_level=1 ;; # Default to INFO level if unknown
+  esac
   
   # Only log if severity meets threshold
   if [ "$severity_level" -ge "$CURRENT_LOG_LEVEL" ]; then
@@ -89,7 +96,8 @@ load_network() {
 
 which() {
   local cmd="$1"
-  local WHICH_PATH="${RUNCVM_PATH//:/ }" # Replace ':' with ' '
+  # Replace ':' with ' ' securely
+  local WHICH_PATH=$(echo "$RUNCVM_PATH" | tr ':' ' ')
   for p in $WHICH_PATH; do [ -x "$p/$cmd" ] && echo "$p/$cmd" && return 0; done
   return 1
 }
@@ -107,7 +115,33 @@ create_aliases() {
       tput \
       debugfs
   do
-    eval "$cmd() { $(which $cmd) \"\$@\"; }"
+    # POSIX sh does not strictly support hyphens in function names.
+    # While some shells do, we should skip them to be safe and avoid "bad function name" errors.
+    case "$cmd" in
+      *-*) continue ;;
+    esac
+
+    # Resolve the path using our which function
+    cmd_path=$(which "$cmd")
+    
+    # If path found, create the alias function
+    if [ -n "$cmd_path" ]; then
+      # Check if the binary is within our bundled guest directory
+      case "$cmd_path" in
+        "$RUNCVM_GUEST"*)
+          # If it's a bundled binary and we have the loader, use it
+          if [ -x "$RUNCVM_GUEST/lib/ld" ]; then
+             eval "$cmd() { $RUNCVM_GUEST/lib/ld $cmd_path \"\$@\"; }"
+          else
+             eval "$cmd() { $cmd_path \"\$@\"; }"
+          fi
+          ;;
+        *)
+          # System binary (e.g. from the image itself), run directly
+          eval "$cmd() { $cmd_path \"\$@\"; }"
+          ;;
+      esac
+    fi
   done
 }
 

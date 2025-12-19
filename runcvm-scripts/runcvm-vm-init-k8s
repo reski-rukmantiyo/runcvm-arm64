@@ -227,7 +227,70 @@ else
 fi
 _T "after network setup"
 
-# No complex route files needed - default GW handles it
+
+# ==========================================================================
+# NFS VOLUME MOUNTS - Mount NFS shares from host unfsd
+# ==========================================================================
+mount_nfs_volumes() {
+  local nfs_config="/.runcvm/nfs-mounts"
+  
+  # Get gateway IP from network config (this is the HOST from VM's perspective)
+  local host_ip=""
+  
+  # Scan all network configs for a gateway
+  # We prioritize eth0 if it exists
+  if [ -f "/.runcvm/network/devices/eth0" ]; then
+     read _ _ _ _ _ IF_GW < "/.runcvm/network/devices/eth0"
+     if [ -n "$IF_GW" ] && [ "$IF_GW" != "-" ]; then
+       host_ip="$IF_GW"
+     fi
+  fi
+  
+  # Fallback to default Docker gateway if still nothing
+  if [ -z "$host_ip" ] || [ "$host_ip" = "-" ]; then
+    echo "[GUEST-INIT] Warning: No gateway found in network configs, defaulting to 172.17.0.1" > /dev/console
+    host_ip="172.17.0.1"
+  fi
+  
+  echo "[GUEST-INIT] Checking for NFS volumes..." > /dev/console
+  echo "[GUEST-INIT]   Host IP (for NFS): $host_ip" > /dev/console
+  
+  if [ ! -f "$nfs_config" ]; then
+    echo "[GUEST-INIT] No nfs-mounts config found - volumes are static copies" > /dev/console
+    return 0
+  fi
+  
+  echo "[GUEST-INIT] NFS Transport: TCP over $host_ip" > /dev/console
+  echo "[GUEST-INIT] Mount type: NFS (live, bidirectional)" > /dev/console
+  
+  # Config format: src:dst:port
+  # Mount each volume via NFS
+  while IFS=: read -r src_path dst nfs_port; do
+    [ -z "$src_path" ] && continue
+    [ -z "$dst" ] && continue
+    
+    echo "[GUEST-INIT]   Mounting $src_path -> $dst (port $nfs_port)..." > /dev/console
+    mkdir -p "$dst"
+    
+    # Mount via NFS v3 with nolock (no separate lockd needed)
+    mount -t nfs -o vers=3,nolock,tcp,port="$nfs_port",mountport="$((nfs_port + 1))" \
+      "$host_ip:$src_path" "$dst" 2>&1 | sed 's/^/    /' > /dev/console
+    
+    if mount | grep -q "$dst"; then
+      echo "[GUEST-INIT]   ✓ Successfully mounted $dst (NFS)" > /dev/console
+    else
+      echo "[GUEST-INIT]   ✗ Failed to mount $dst via NFS" > /dev/console
+      echo "[GUEST-INIT]     Falling back to static copy mode" > /dev/console
+    fi
+  done < "$nfs_config"
+  
+  echo "[GUEST-INIT]   NFS mounts complete" > /dev/console
+}
+
+echo "========== NFS VOLUME MOUNTS ==========" > /dev/console
+mount_nfs_volumes
+echo "========== NFS VOLUME MOUNTS END ==========" > /dev/console
+
 
 
 # TODO

@@ -31,7 +31,13 @@ else
 fi
 
 if [ -x "$RUNCVM/usr/bin/jq" ]; then
-  RUNCVM_JQ=$RUNCVM/usr/bin/jq
+  # Verify if bundled jq works with the loader
+  if $RUNCVM_LD "$RUNCVM/usr/bin/jq" --version >/dev/null 2>&1; then
+    RUNCVM_JQ=$RUNCVM/usr/bin/jq
+  else
+    echo "WARNING: Bundled jq failed to execute, falling back to system jq" >&2
+    RUNCVM_JQ="jq"
+  fi
 else
   RUNCVM_JQ="jq"
 fi

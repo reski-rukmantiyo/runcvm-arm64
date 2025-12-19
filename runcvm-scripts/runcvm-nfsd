@@ -74,14 +74,59 @@ EOF
   # -n = NFS port
   # -m = mount port
   # Check for unfsd binary
-  if [ ! -x "/usr/local/sbin/unfsd" ]; then
-     log "ERROR: unfsd binary not found at /usr/local/sbin/unfsd."
-     log "       Please install unfs3 on the host (or disable NFS)."
-     return 1
+  # Priority:
+  # 1. Bundled unfsd in /opt/runcvm/sbin (ensure LD_LIBRARY_PATH matches)
+  # 2. System unfsd in /usr/local/sbin
+  # 3. System unfsd in PATH
+  
+  local UNFS_BIN=""
+  local RUNCVM_LIB_DIR="/opt/runcvm/lib"
+  
+  if [ -x "/opt/runcvm/sbin/unfsd" ]; then
+     UNFS_BIN="/opt/runcvm/sbin/unfsd"
+     # Use the bundled dynamic linker and library path
+     export LD_LIBRARY_PATH="${RUNCVM_LIB_DIR}:${LD_LIBRARY_PATH}"
+     
+     # We must invoke via the dynamic linker because the host might be 
+     # glibc-based while unfsd is musl-based, or vice versa, or the 
+     # hardcoded interpreter path in unfsd (/lib/ld-musl...) is missing.
+     
+     # Find the linker (it's usually ld-linux* or ld-musl*)
+     INTERPRETER=$(find "$RUNCVM_LIB_DIR" -maxdepth 1 -name "ld-*" -type f | head -n 1)
+     
+     if [ -x "$INTERPRETER" ]; then
+        log "  Using interpreter: $INTERPRETER"
+        "$INTERPRETER" "$UNFS_BIN" -d -e "$exports_file" -n "$port" -m "$((port+1))" \
+          > "$log_file" 2>&1 &
+     else
+        log "WARNING: Bundled interpreter not found in $RUNCVM_LIB_DIR. Trying direct execution..."
+        "$UNFS_BIN" -d -e "$exports_file" -n "$port" -m "$((port+1))" \
+          > "$log_file" 2>&1 &
+     fi
+     
+  elif [ -x "/usr/local/sbin/unfsd" ]; then
+     UNFS_BIN="/usr/local/sbin/unfsd"
+     # System binary, run directly
+     "$UNFS_BIN" -d -e "$exports_file" -n "$port" -m "$((port+1))" \
+       > "$log_file" 2>&1 &
+       
+  elif command -v unfsd >/dev/null 2>&1; then
+     UNFS_BIN=$(command -v unfsd)
+     # System binary, run directly
+     "$UNFS_BIN" -d -e "$exports_file" -n "$port" -m "$((port+1))" \
+       > "$log_file" 2>&1 &
   fi
 
-  /usr/local/sbin/unfsd -d -e "$exports_file" -n "$port" -m "$((port+1))" \
-    > "$log_file" 2>&1 &
+  if [ -z "$UNFS_BIN" ]; then
+     log "ERROR: unfsd binary not found."
+     log "       Please install unfs3 on the host or ensure RunCVM is installed correctly."
+     return 1
+  fi
+  
+  log "  Using unfsd: $UNFS_BIN"
+
+  # (Execution logic moved into if/else blocks above to handle interpreter)
+  local pid=$!
   
   local pid=$!
   echo "$pid" > "$pid_file"

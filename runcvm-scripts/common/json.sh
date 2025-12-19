@@ -4,7 +4,11 @@
 # ============================================================
 
 jq() {
-  $RUNCVM_LD $RUNCVM_JQ "$@"
+  if [ -n "$RUNCVM_LD" ] && [[ "$RUNCVM_JQ" == /* ]]; then
+    $RUNCVM_LD $RUNCVM_JQ "$@"
+  else
+    $RUNCVM_JQ "$@"
+  fi
 }
 
 jq_set() {
