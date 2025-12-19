@@ -77,8 +77,34 @@ abuild -rFf
 EOF
 
 # --- BUILD STAGE ---
+# Build patched unfs3 that ignores portmap registration failure
+# (this allows it to run without rpcbind if explicit ports are used)
+FROM alpine:$ALPINE_VERSION as unfs3-build
+
+RUN apk add --no-cache \
+    build-base autoconf automake libtool flex bison git pkgconf libtirpc-dev
+
+WORKDIR /build
+# Clone latest unfs3 (using HEAD as 0.10.0 is not strictly tagged in some repos, but HEAD is stable)
+RUN git clone https://github.com/unfs3/unfs3.git . && \
+    ./bootstrap
+
+# Patch daemon.c to make registration failure non-fatal
+# We look for the "unable to register" error block and comment out the exit(1)
+RUN sed -i '/unable to register/!b;n;s/exit(1);/\/\/ exit(1);/' daemon.c && \
+    # Also patch mount registration
+    sed -i '/unable to register/!b;n;s/exit(1);/\/\/ exit(1);/' mount.c || true
+
+RUN ./configure --prefix=/usr --sbindir=/usr/sbin && \
+    make && \
+    make install DESTDIR=/tmp/install
+
+# --- BUILD STAGE ---
 # Build dist-independent dynamic binaries and libraries for ARM64
 FROM alpine:$ALPINE_VERSION as binaries
+
+# Copy patched unfsd
+COPY --from=unfs3-build /tmp/install/usr/sbin/unfsd /tmp/unfsd-patched
 
 RUN apk update && \
     apk add --no-cache file bash \
@@ -123,10 +149,11 @@ RUN /usr/local/bin/make-bundelf-bundle.sh --bundle && \
     cp -a /etc/terminfo $BUNDELF_CODE_PATH/usr/share && \
     # Copy unfs3 (unfsd) binary and ALL its dependencies for NFS volume sync
     mkdir -p $BUNDELF_CODE_PATH/sbin && \
-    cp /usr/sbin/unfsd $BUNDELF_CODE_PATH/sbin/unfsd && \
+    # COPY PATCHED UNFS3 from build stage
+    cp /tmp/unfsd-patched $BUNDELF_CODE_PATH/sbin/unfsd && \
     chmod +x $BUNDELF_CODE_PATH/sbin/unfsd && \
     # Copy all unfsd library dependencies using ldd
-    for lib in $(ldd /usr/sbin/unfsd 2>/dev/null | grep "=>" | awk '{print $3}' | grep -v "^$"); do \
+    for lib in $(ldd /tmp/unfsd-patched 2>/dev/null | grep "=>" | awk '{print $3}' | grep -v "^$"); do \
     cp -n "$lib" $BUNDELF_CODE_PATH/lib/ 2>/dev/null || true; \
     done && \
     # Also copy transitive dependencies for the libs we just copied

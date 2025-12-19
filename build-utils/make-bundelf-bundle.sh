@@ -402,7 +402,7 @@ all() {
   write_digest
 
   # Copy LD and and create copnvenience symlink it to ld
-  cp --parents $LD_PATH $BUNDELF_CODE_PATH
+  cp -L --parents $LD_PATH $BUNDELF_CODE_PATH
   ln -s $(echo $LD_PATH | sed -r 's|^/lib/|./|') $BUNDELF_CODE_PATH/lib/ld
 }
 

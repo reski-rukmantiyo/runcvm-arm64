@@ -103,24 +103,19 @@ which() {
 }
 
 create_aliases() {
+  echo "DEBUG: create_aliases starting in $PWD" >&2
+  ls -l "$RUNCVM_GUEST/lib/ld" >&2 || echo "DEBUG: Loader missing!" >&2
+  
   for cmd in \
       bash \
       busybox awk cat chgrp chmod cut grep head hostname init ln ls mkdir mountpoint poweroff ps rm rmdir sh sysctl touch tr \
       jq \
       dnsmasq \
       blkid findmnt getent mke2fs resize2fs mount nc ping socat \
-      xtables-nft-multi xtables-legacy-multi \
       dbclient dropbear dropbearkey \
-      s6-applyuidgid \
       tput \
       debugfs
   do
-    # POSIX sh does not strictly support hyphens in function names.
-    # While some shells do, we should skip them to be safe and avoid "bad function name" errors.
-    case "$cmd" in
-      *-*) continue ;;
-    esac
-
     # Resolve the path using our which function
     cmd_path=$(which "$cmd")
     
@@ -143,6 +138,7 @@ create_aliases() {
       esac
     fi
   done
+  echo "DEBUG: create_aliases finished" >&2
 }
 
 create_aliases
