@@ -944,11 +944,23 @@ fi # End Cache Miss/No Cache logic
       
       read DOCKER_IF DOCKER_IF_MAC DOCKER_IF_MTU DOCKER_IF_IP DOCKER_IF_IP_NETPREFIX DOCKER_IF_IP_GW < "$device_file"
       
-      # For Firecracker, we need a unique MAC for the guest side.
-      # We modify the container's MAC to start with AA:FC:00 so it's distinct but related.
-      # If we have multiple interfaces, this simple sed might map them to the same MAC if the suffix is identical.
-      # But typically container MACs are unique.
-      local fc_mac=$(echo "$DOCKER_IF_MAC" | busybox sed 's/^..:..:../AA:FC:00/')
+      # MAC ADDRESS SWAPPING (Critical for Cloud/CNI)
+      # We must use the AUTHORIZED MAC ($DOCKER_IF_MAC) inside the Guest.
+      # But we can't have duplicate MACs on the bridge (Host eth0 vs Guest TAP).
+      # SO: We swap them. Host eth0 gets the dummy MAC, Guest gets the Real MAC.
+      
+      local fc_mac="$DOCKER_IF_MAC"
+      local host_dummy_mac=$(echo "$DOCKER_IF_MAC" | busybox sed 's/^..:..:../AA:FC:00/')
+      
+      # If Host eth0 still has the Real MAC, swap it!
+      # We check current MAC.
+      local current_mac=$(cat /sys/class/net/$DOCKER_IF/address)
+      if [ "$current_mac" = "$DOCKER_IF_MAC" ]; then
+         log "  Swapping MACs for $DOCKER_IF to avoid bridge collision..."
+         /.runcvm/guest/sbin/ip link set dev "$DOCKER_IF" down
+         /.runcvm/guest/sbin/ip link set dev "$DOCKER_IF" address "$host_dummy_mac"
+         /.runcvm/guest/sbin/ip link set dev "$DOCKER_IF" up
+      fi
       
       local tap_name=""
       
@@ -968,6 +980,14 @@ fi # End Cache Miss/No Cache logic
         
         log "  Network ($DOCKER_IF): $tap_name ($fc_mac) -> $bridge_name"
         
+        # Ensure IP Forwarding is enabled (CRITICAL for routing/NAT)
+        if [ -w /proc/sys/net/ipv4/ip_forward ]; then
+           echo 1 > /proc/sys/net/ipv4/ip_forward
+        else
+           # Try sysctl
+           sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || true
+        fi
+        
         # Create TAP device for Firecracker if it doesn't exist
 
 
@@ -979,6 +999,10 @@ fi # End Cache Miss/No Cache logic
         # Add TAP to the bridge
         log "    Adding $tap_name to bridge $bridge_name..."
         /.runcvm/guest/sbin/ip link set dev "$tap_name" master "$bridge_name"
+        
+        # Ensure Bridge is UP (Critical if we skipped creation or if down)
+        log "    Ensuring bridge $bridge_name is UP..."
+        /.runcvm/guest/sbin/ip link set dev "$bridge_name" up
         
         # Set MTU and bring up
         /.runcvm/guest/sbin/ip link set dev "$tap_name" up mtu "${DOCKER_IF_MTU:-1500}"
@@ -1045,7 +1069,7 @@ fi # End Cache Miss/No Cache logic
         fi
         
         # Remove Link-Local IP from bridge to force usage of our Alias
-        ip addr del 169.254.1.1/32 dev "$bridge_name" 2>/dev/null || true
+        # ip addr del 169.254.1.1/32 dev "$bridge_name" 2>/dev/null || true
         
         log "    Adding connectivity alias $alias_ip to $bridge_name"
         if /.runcvm/guest/sbin/ip addr add "$alias_ip/$net_prefix" dev "$bridge_name"; then
@@ -1087,60 +1111,12 @@ fi # End Cache Miss/No Cache logic
              log "    Adding NAT MASQUERADE rule for $DOCKER_IF..."
              if [ -n "$RUNCVM_GUEST" ] && [ -d "$RUNCVM_GUEST/usr/lib/xtables" ]; then
                XTABLES_LIBDIR=$RUNCVM_GUEST/usr/lib/xtables xtables-nft-multi iptables \
-                 -t nat -A POSTROUTING -s "$DOCKER_IF_IP" -o "$DOCKER_IF_IP" -j MASQUERADE 2>/dev/null || true
-                 # Note: The original code used -o eth0 (hardcoded). 
-                 # In bridge mode, the traffic leaves via the container's eth0 usually?
-                 # Actually, for the VM, traffic leaves via TAP -> Bridge -> Container Eth0.
-                 # The NAT rule is needed if the *container* needs to NAT VM traffic out to the world.
-                 # Originally: -s "$DOCKER_IF_IP" -o eth0.
-                 # If this is eth0, then -o eth0 is correct (BUT wait, eth0 is now a slave of br-eth0).
-                 # So traffic leaves via br-eth0? No, traffic leaves via the bridge routing?
-                 #
-                 # Wait, in the entrypoint, we moved the Container IP to br-eth0?
-                 # Entrypoint: `ip addr flush dev eth0`, `ip addr add ... dev br-eth0`.
-                 # So the container's "external" interface is now br-eth0.
-                 #
-                 # But we usually want to NAT traffic *leaving* the container infrastructure?
-                 # Actually, usually Docker handles the NAT for the container.
-                 # This rule seems to be for traffic *originating from the VM* (which has FC_IP which is DOCKER_IF_IP).
-                 #
-                 # Wait, the VM uses the SAME IP as the container (`DOCKER_IF_IP`).
-                 # So effectively the VM *is* the container on the network.
-                 # So we don't need NAT for the VM to be seen as the container IP.
-                 #
-                 # The original code:
-                 # iptables -t nat -A POSTROUTING -s "$DOCKER_IF_IP" -o eth0 -j MASQUERADE
-                 # This masquerades traffic FROM the IP (VM/Container IP) going out eth0.
-                 # This looks weird. If source is IP, why masquerade?
-                 # Maybe to fix some routing issue with the bridge?
-                 #
-                 # In multi-nic setup, if we have eth0 and eth1.
-                 # We should probably skip this explicit NAT rule if we are confident the bridge routing works.
-                 # But let's assume valid: if valid, it should likely be:
-                 # -o eth0 (if that's the upstream).
-                 # If we have multiple NICs, which is upstream?
-                 # Usually the default gateway interface. DOCKER_IF_IP_GW tells us.
-                 
-                 # Let's keep it simple: if this interface has a Gateway, we add the rule.
-                 if [ -n "$DOCKER_IF_IP_GW" ] && [ "$DOCKER_IF_IP_GW" != "-" ]; then
-                    # This is likely the default route interface.
-                    # The physical interface is $DOCKER_IF (now enslaved to br-$DOCKER_IF).
-                    # But the *route* probably goes via ... wait.
-                    # If we enslaved eth0 to br-eth0, traffic goes out via br-eth0?
-                    # The bridge *is* the interface with the IP.
-                    
-                    # Let's keep the existing logic but make it dynamic. 
-                    # Use -j MASQUERADE for all traffic from this IP leaving the container?
-                    # Actually, let's just stick to the original "eth0" logic for "eth0" interface only for safety,
-                    # or apply to all?
-                    
-                    # Original code was hardcoded to eth0.
-                    # Currently we iterate. If DOCKER_IF == eth0, we can add it.
-                    true
-                 fi
+                 -t nat -A POSTROUTING -s "$DOCKER_IF_IP" -o "$DOCKER_IF" -j MASQUERADE 2>/dev/null || true
+             else
+               iptables -t nat -A POSTROUTING -s "$DOCKER_IF_IP" -o "$DOCKER_IF" -j MASQUERADE 2>/dev/null || true
              fi
         fi
-      fi
+        fi
       
       # Build JSON object for this interface
       local iface_json="{\"iface_id\":\"$DOCKER_IF\",\"guest_mac\":\"$fc_mac\",\"host_dev_name\":\"$tap_name\"}"

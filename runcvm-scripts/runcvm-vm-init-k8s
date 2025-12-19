@@ -137,6 +137,44 @@ do
 done
 _T "after network setup"
 
+# =================================================================
+# CONFIGURE ETHERNET (eth0)
+# =================================================================
+# Check if we have network config injected
+if [ -d "/.runcvm/network/devices" ]; then
+  echo "[GUEST-INIT] Configuring network interfaces..." > /dev/console
+  
+  # Try to load 'eth0' or 'default'
+  NET_DEV="eth0"
+  [ ! -f "/.runcvm/network/devices/$NET_DEV" ] && NET_DEV="default"
+  
+  if load_network "$NET_DEV"; then
+     echo "[GUEST-INIT] Configuring $DOCKER_IF ($DOCKER_IF_IP/$DOCKER_IF_IP_NETPREFIX)..." > /dev/console
+     
+     # Bring interface UP
+     ip link set dev eth0 up mtu "${DOCKER_IF_MTU:-1500}"
+     
+     # Add Address
+     if [ -n "$DOCKER_IF_IP" ]; then
+        # Flush first to avoid 'File exists' on retries
+        ip addr flush dev eth0
+        ip addr add "${DOCKER_IF_IP}/${DOCKER_IF_IP_NETPREFIX}" dev eth0
+     fi
+     
+     # Add Gateway
+     if [ -n "$DOCKER_IF_IP_GW" ]; then
+        ip route add default via "$DOCKER_IF_IP_GW" dev eth0
+     fi
+     
+     _T "eth0 configured"
+  else
+     echo "[GUEST-INIT] WARNING: Failed to load network config for $NET_DEV" > /dev/console
+  fi
+else
+  echo "[GUEST-INIT] WARNING: No network configuration found in /.runcvm/network" > /dev/console
+fi
+# =================================================================
+
 # Bring up local interface
 ip link set lo up
 _T "after network up"
