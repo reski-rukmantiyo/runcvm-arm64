@@ -38,6 +38,9 @@ if [ -f /.runcvm/config ]; then
   . /.runcvm/config
 fi
 
+# Cache paths before cleaning
+S6_BINARY="$RUNCVM_GUEST/bin/s6-applyuidgid"
+
 # Clean RUNCVM env vars
 clean_env
 
@@ -67,7 +70,7 @@ fi
 
 # Execute
 if [ -n "$additionalGids" ]; then
-    exec $RUNCVM_GUEST/bin/s6-applyuidgid -u $uid -g $gid -G "$additionalGids" "$@"
+    exec "$S6_BINARY" -u $uid -g $gid -G "$additionalGids" "$@"
 else
-    exec $RUNCVM_GUEST/bin/s6-applyuidgid -u $uid -g $gid "$@"
+    exec "$S6_BINARY" -u $uid -g $gid "$@"
 fi

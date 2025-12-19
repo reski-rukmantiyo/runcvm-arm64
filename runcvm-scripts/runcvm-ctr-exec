@@ -57,6 +57,10 @@ if [ "$hasHome" != "1" ]; then
   HOME=$(getent passwd "$uid" | cut -d':' -f6)
 fi
 
+# Cache paths before cleaning
+DBCLIENT_BIN="$RUNCVM_GUEST/usr/bin/dbclient"
+VSOCK_CONNECT_BIN="$RUNCVM_GUEST/scripts/runcvm-vsock-connect"
+
 # Clean RUNCVM env vars
 clean_env
 
@@ -114,7 +118,7 @@ fi
 # Verify connectivity before connecting
 # This avoids "Host is unreachable" errors if the VM isn't fully ready or ARP is converging
 # VSOCK CHECK vs IP CHECK
-if [ -e "/run/firecracker.vsock" ] && [ -x "$RUNCVM_GUEST/scripts/runcvm-vsock-connect" ]; then
+if [ -e "/run/firecracker.vsock" ] && [ -x "$VSOCK_CONNECT_BIN" ]; then
    # VSOCK MODE
    USE_VSOCK=1
    SSH_CONNECT_IP="127.0.0.1" # Connection to local socat proxy
@@ -201,7 +205,7 @@ if [ "$USE_VSOCK" = "1" ]; then
 
    # Start socat proxy: TCP-LISTEN -> EXEC:runcvm-vsock-connect
    # We remove 2>/dev/null to see errors in runcvm.debug or kubectl logs
-   $SOCAT_BIN TCP-LISTEN:$PROXY_PORT,bind=127.0.0.1,fork,reuseaddr EXEC:"$RUNCVM_GUEST/scripts/runcvm-vsock-connect /run/firecracker.vsock 22" &
+   $SOCAT_BIN TCP-LISTEN:$PROXY_PORT,bind=127.0.0.1,fork,reuseaddr EXEC:"$VSOCK_CONNECT_BIN /run/firecracker.vsock 22" &
    PROXY_PID=$!
    
    # Cleanup proxy on exit
@@ -211,9 +215,9 @@ if [ "$USE_VSOCK" = "1" ]; then
    sleep 0.1
    
    # Connect dbclient to this proxy port
-   exec $RUNCVM_GUEST/usr/bin/dbclient "${opts[@]}" -p $PROXY_PORT -y -y -i /.runcvm/dropbear/key root@127.0.0.1 "$command '$uidgid' '$(echo -n $cwd | to_bin)' '$args_bin' '$env_bin'"
+   exec "$DBCLIENT_BIN" "${opts[@]}" -p $PROXY_PORT -y -y -i /.runcvm/dropbear/key root@127.0.0.1 "$command '$uidgid' '$(echo -n $cwd | to_bin)' '$args_bin' '$env_bin'"
 
 else
    # Original TCP Mode (Global Proxy on 22222)
-   exec $RUNCVM_GUEST/usr/bin/dbclient "${opts[@]}" -p 22222 -y -y -i /.runcvm/dropbear/key root@$SSH_TARGET_IP "$command '$uidgid' '$(echo -n $cwd | to_bin)' '$args_bin' '$env_bin'"
+   exec "$DBCLIENT_BIN" "${opts[@]}" -p 22222 -y -y -i /.runcvm/dropbear/key root@$SSH_TARGET_IP "$command '$uidgid' '$(echo -n $cwd | to_bin)' '$args_bin' '$env_bin'"
 fi

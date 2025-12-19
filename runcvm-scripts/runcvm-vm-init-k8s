@@ -277,6 +277,10 @@ _EOE_
 else
   # If not, assume the user knows what they're doing: launch qemu-ga and just run their entrypoint.
 
+  # Cache paths before cleaning environment (which unsets RUNCVM_GUEST)
+  INIT_BINARY="$RUNCVM_GUEST/sbin/runcvm-init"
+  START_SCRIPT="$RUNCVM_GUEST/scripts/runcvm-vm-start"
+
   # Clean RUNCVM env vars
   clean_env
 
@@ -293,6 +297,9 @@ else
   
   # Invoke runcvm-init with --no-fork purely to create controlling tty,
   # then exec runcvm-vm-start
-  exec $RUNCVM_GUEST/sbin/runcvm-init --no-fork $RUNCVM_GUEST/scripts/runcvm-vm-start
+  exec "$INIT_BINARY" --no-fork "$START_SCRIPT"
+fi  
+  # echo "[GUEST-INIT] SLEEPING INFINITY FOR DEBUG..." > /dev/console
+  # exec sleep infinity
 fi
 _T "after init"
