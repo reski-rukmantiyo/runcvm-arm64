@@ -156,14 +156,16 @@ if [ -d "/.runcvm/network/devices" ]; then
      
      # Add Address
      if [ -n "$DOCKER_IF_IP" ]; then
-        # Flush first to avoid 'File exists' on retries
+        # Flush first to clean slate (removes checking for duplicates manually)
         ip addr flush dev eth0
+        ip route flush dev eth0
         ip addr add "${DOCKER_IF_IP}/${DOCKER_IF_IP_NETPREFIX}" dev eth0
      fi
      
      # Add Gateway
      if [ -n "$DOCKER_IF_IP_GW" ]; then
-        ip route add default via "$DOCKER_IF_IP_GW" dev eth0
+        # Use 'onlink' to force the route even if the gateway isn't in the subnet (e.g. /32)
+        ip route add default via "$DOCKER_IF_IP_GW" dev eth0 onlink
      fi
      
      _T "eth0 configured"

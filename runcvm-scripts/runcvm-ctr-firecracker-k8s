@@ -961,6 +961,13 @@ fi # End Cache Miss/No Cache logic
          /.runcvm/guest/sbin/ip link set dev "$DOCKER_IF" address "$host_dummy_mac"
          /.runcvm/guest/sbin/ip link set dev "$DOCKER_IF" up
       fi
+
+      # ENABLE PROMISCUOUS MODE (Critical for Nested VM / Bridge)
+      # The Bridge (br-eth0) needs to see traffic for the VM's MAC.
+      # Since eth0 is a slave, it should technically be promisc automatically, 
+      # but in some cloud/nested envs, we must force it.
+      log "  Enabling promiscuous mode on $DOCKER_IF..."
+      /.runcvm/guest/sbin/ip link set dev "$DOCKER_IF" promisc on
       
       local tap_name=""
       
@@ -1069,7 +1076,11 @@ fi # End Cache Miss/No Cache logic
         fi
         
         # Remove Link-Local IP from bridge to force usage of our Alias
-        # ip addr del 169.254.1.1/32 dev "$bridge_name" 2>/dev/null || true
+        # CRITICAL: This unmasks the Real Gateway (169.254.1.1) upstream.
+        # If we keep this IP on the bridge, the bridge routes packets (L3) using its own MAC,
+        # which fails MAC address validation on the switch.
+        # By removing it, we force L2 bridging, preserving the VM's (Authorized) Source MAC.
+        ip addr del 169.254.1.1/32 dev "$bridge_name" 2>/dev/null || true
         
         log "    Adding connectivity alias $alias_ip to $bridge_name"
         if /.runcvm/guest/sbin/ip addr add "$alias_ip/$net_prefix" dev "$bridge_name"; then
