@@ -114,7 +114,7 @@ RUN /usr/local/bin/make-bundelf-bundle.sh --bundle && \
     mkdir -p $BUNDELF_CODE_PATH/bin && \
     cd $BUNDELF_CODE_PATH/bin && \
     for cmd in \
-    uname mkdir rmdir cp mv free ip awk sleep base64 cat chgrp chmod cut grep head hostname init ln ls \
+    uname mkdir rmdir cp mv free awk sleep base64 cat chgrp chmod cut grep head hostname init ln ls \
     mkdir poweroff ps rm rmdir route sh sysctl tr touch ipcalc; \
     do \
     ln -s busybox $cmd; \

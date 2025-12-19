@@ -14,16 +14,32 @@ else
 fi
 
 # Change to saved PWD
-cd $(cat /.runcvm/pwd) && unset OLDPWD
+if [ -f /.runcvm/pwd ]; then
+  cd $(cat /.runcvm/pwd) && unset OLDPWD
+else
+  cd /
+fi
 
 # Reload original environment
-. /.runcvm/config
+if [ -f /.runcvm/config ]; then
+  . /.runcvm/config
+fi
 
-# Load original entrypoint
-mapfile -t ARGS </.runcvm/entrypoint
+# Load original entrypoint (POSIX compliant)
+if [ -f /.runcvm/entrypoint ]; then
+  ARGS=()
+  while IFS= read -r line || [ -n "$line" ]; do
+    ARGS+=("$line")
+  done < /.runcvm/entrypoint
+else
+  ARGS=("/bin/sleep" "3600")
+fi
 
 # Clean RUNCVM env vars
 clean_env
+
+# Default UID/GID if broken logic above
+RUNCVM_UIDGID="${RUNCVM_UIDGID:-0:0:0}"
 
 IFS=':' read -r uid gid additionalGids <<< "$RUNCVM_UIDGID"
 exec $RUNCVM_GUEST/bin/s6-applyuidgid -u $uid -g $gid -G "$additionalGids" "${ARGS[@]}"

@@ -98,7 +98,7 @@ create_aliases() {
   for cmd in \
       bash \
       busybox awk cat chgrp chmod cut grep head hostname init ln ls mkdir mountpoint poweroff ps rm rmdir sh sysctl touch tr \
-      ip jq \
+      jq \
       dnsmasq \
       blkid findmnt getent mke2fs resize2fs mount nc ping socat \
       xtables-nft-multi xtables-legacy-multi \

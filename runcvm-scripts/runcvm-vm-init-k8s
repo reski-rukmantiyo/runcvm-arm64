@@ -49,6 +49,33 @@ _T() {
 }
 _T "vm-init-start"
 
+# === DROPBEAR SSH (Started Early for VSOCK Access) ===
+_T "starting dropbear"
+mkdir -p /.runcvm/dropbear
+if [ ! -f /.runcvm/dropbear/key ]; then
+  # Create dropbear RSA public/private key pair
+  KEY_PUBLIC=$(dropbearkey -t ed25519 -f /.runcvm/dropbear/key 2>/dev/null | grep ^ssh | cut -d' ' -f2)
+  # Create json for dropbear EPKA module
+  cat <<_EOE_ >/.runcvm/dropbear/epka.json && chmod 400 /.runcvm/dropbear/epka.json
+[
+    {
+        "user": "root",
+        "keytype": "ssh-ed25519",
+        "key": "$KEY_PUBLIC",
+        "options":"no-X11-forwarding",
+        "comments": ""
+    }
+]
+_EOE_
+fi
+
+# Load port from config or default
+SSHD_PORT="${SSHD_PORT:-22222}"
+echo "[GUEST-INIT] Starting dropbear on port $SSHD_PORT..." > /dev/console
+dropbear -REF -p $SSHD_PORT -A $RUNCVM_GUEST/tmp/dropbear/libepka_file.so,/.runcvm/dropbear/epka.json -P /.runcvm/dropbear/dropbear.pid &>/dev/null &
+echo "[GUEST-INIT] Dropbear started (PID: $!)" > /dev/console
+# ====================================================
+
 # Load original environment
 # Sanitize config to be POSIX compliant (replace bash 'declare -x' with 'export')
 sed -i 's/^declare -x/export/g' /.runcvm/config 2>/dev/null || true
@@ -66,7 +93,7 @@ _T "mount remount"
 # FIXME: Something is making /.runcvm ro, so remount it rw
 # until such time as exit code handling and dropbear key creation
 # obviate the need for this.
-mount -o remount,rw /.runcvm
+mount -o remount,rw /.runcvm || true
 _T "mount runc-vm"
 
 # Alpine initrd doesn't configure /dev device permissions and ownership
@@ -155,6 +182,8 @@ if [ -f "/.runcvm/network/devices/eth0" ]; then
   
 else
   echo "Warning: /network/devices/eth0 missing, falling back to DHCP..."
+  # Ensure eth0 is UP before DHCP
+  ip link set eth0 up
   udhcpc -i eth0 -n -q 
 fi
 _T "after network setup"
@@ -188,21 +217,23 @@ _T "after disk fstabb"
 _T "after cgrop"
 
 # Load original entrypoint
-mapfile -t ARGS </.runcvm/entrypoint
+# Load original entrypoint (First line only for systemd check)
+if [ -f /.runcvm/entrypoint ]; then
+  read -r ARGS_INIT < /.runcvm/entrypoint
+else
+  ARGS_INIT=""
+fi
 _T "after entrypoint"
 
-ARGS_INIT="${ARGS[0]}"
-
 # Check if ARGS_INIT is a symlink and follow it if it is
-if [ -L "$ARGS_INIT" ]; then
+if [ -L "$ARGS_INIT" ] && [ -n "$ARGS_INIT" ]; then
     ARGS_INIT=$(readlink -f "$ARGS_INIT")
 fi
 
-if [[ "$ARGS_INIT" =~ /systemd$ ]]; then
-  cgroupfs_mount "${RUNCVM_CGROUPFS:-none}"
-else
-  cgroupfs_mount "${RUNCVM_CGROUPFS:-hybrid}"
-fi
+case "$ARGS_INIT" in
+  */systemd) cgroupfs_mount "${RUNCVM_CGROUPFS:-none}" ;;
+  *) cgroupfs_mount "${RUNCVM_CGROUPFS:-hybrid}" ;;
+esac
 _T "after systemd"
 
 # Make directory for dropbear host keys and public/private keypair
@@ -229,7 +260,8 @@ fi
 _T "after key ssh"
 
 # Load choice of console device
-read -r CONSOLE_DEVICE </.runcvm/console
+read -r CONSOLE_DEVICE </.runcvm/console || CONSOLE_DEVICE="ttyS0"
+if [ -z "$CONSOLE_DEVICE" ]; then CONSOLE_DEVICE="ttyS0"; fi
 _T "after console"
 
 # Rename /.dockerenv, because presence of this file leads to systemd-detect-virt detecting presence of a container,
@@ -254,7 +286,7 @@ _EOE_
   rm -f /.runcvm/once
 
   # Clear the environment, and run our own init, disconnecting stdout and stderr from terminal
-  exec -c $RUNCVM_GUEST/bin/init &>/dev/null
+  exec $RUNCVM_GUEST/bin/init &>/dev/null
 else
   # If not, assume the user knows what they're doing: launch qemu-ga and just run their entrypoint.
 
@@ -264,10 +296,7 @@ else
   # Run the qemu guest agent, needed to support future functionality
   $RUNCVM/scripts/runcvm-vm-qemu-ga &>/dev/null &
 
-  # Run dropbear SSH server, needed to support 'docker exec'
-  echo "[GUEST-INIT] Starting dropbear on port $SSHD_PORT..." > /dev/console
-  dropbear -REF -p $SSHD_PORT -A $RUNCVM_GUEST/tmp/dropbear/libepka_file.so,/.runcvm/dropbear/epka.json -P /.runcvm/dropbear/dropbear.pid &>/dev/null &
-  echo "[GUEST-INIT] Dropbear started (PID: $!)" > /dev/console
+  echo "[GUEST-INIT] Dropbear should be already running." > /dev/console
 
 
 
@@ -277,6 +306,6 @@ else
   
   # Invoke runcvm-init with --no-fork purely to create controlling tty,
   # then exec runcvm-vm-start
-  exec -c $RUNCVM_GUEST/sbin/runcvm-init --no-fork $RUNCVM_GUEST/scripts/runcvm-vm-start
+  exec $RUNCVM_GUEST/sbin/runcvm-init --no-fork $RUNCVM_GUEST/scripts/runcvm-vm-start
 fi
 _T "after init"

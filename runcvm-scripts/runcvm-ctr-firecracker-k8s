@@ -222,6 +222,63 @@ main() {
        fi
        
        busybox rm -f "$auth_keys_tmp"
+       busybox rm -f "$auth_keys_tmp"
+    fi
+    
+    # INJECT CONSOLE FILE (CRITICAL for init script)
+    # The cached rootfs might be missing /.runcvm/console. Inject it.
+    if command -v debugfs >/dev/null 2>&1; then
+       local console_tmp="/tmp/console.$$"
+       echo "ttyS0" > "$console_tmp"
+       
+       debugfs -w -R "mkdir /.runcvm" "$rootfs_path" >/dev/null 2>&1 || true
+       debugfs -w -R "rm /.runcvm/console" "$rootfs_path" >/dev/null 2>&1 || true
+       if ! debugfs -w -R "write $console_tmp /.runcvm/console" "$rootfs_path" >/dev/null 2>&1; then
+          log "  [WARNING] Failed to inject console file into cached rootfs"
+       else
+          log "  Injected console file into cached rootfs"
+       fi
+       busybox rm -f "$console_tmp"
+       busybox rm -f "$console_tmp"
+    fi
+    
+    # INJECT CONFIG, PWD (CRITICAL for s6-applyuidgid and cd)
+    if command -v debugfs >/dev/null 2>&1; then
+       # Ensure directory exists first
+       debugfs -w -R "mkdir /.runcvm" "$rootfs_path" >/dev/null 2>&1 || true
+
+       # CONFIG
+       if [ -f "/.runcvm/config" ]; then
+          debugfs -w -R "rm /.runcvm/config" "$rootfs_path" >/dev/null 2>&1 || true
+          if ! debugfs -w -R "write /.runcvm/config /.runcvm/config" "$rootfs_path" >/dev/null 2>&1; then
+             log "  [WARNING] Failed to inject /.runcvm/config into cached rootfs"
+          else
+             log "  Injected /.runcvm/config"
+          fi
+       fi
+       
+       # PWD
+       if [ -f "/.runcvm/pwd" ]; then
+          debugfs -w -R "rm /.runcvm/pwd" "$rootfs_path" >/dev/null 2>&1 || true
+          if ! debugfs -w -R "write /.runcvm/pwd /.runcvm/pwd" "$rootfs_path" >/dev/null 2>&1; then
+             log "  [WARNING] Failed to inject /.runcvm/pwd into cached rootfs"
+          else
+             log "  Injected /.runcvm/pwd"
+          fi
+       fi
+       
+       # ENTRYPOINT (Also inject as /.runcvm/entrypoint just in case, though we did .runcvm-entrypoint earlier?)
+       # Wait, earlier code injected `entrypoint_file` to `/.runcvm-entrypoint` (lines 168-174).
+       # But `runcvm-vm-start` reads `/.runcvm/entrypoint` (line 23).
+       # WE MUST INJECT TO /.runcvm/entrypoint TOO!
+       if [ -f "/.runcvm/entrypoint" ]; then
+          debugfs -w -R "rm /.runcvm/entrypoint" "$rootfs_path" >/dev/null 2>&1 || true
+          if ! debugfs -w -R "write /.runcvm/entrypoint /.runcvm/entrypoint" "$rootfs_path" >/dev/null 2>&1; then
+             log "  [WARNING] Failed to inject /.runcvm/entrypoint into cached rootfs"
+          else
+             log "  Injected /.runcvm/entrypoint"
+          fi
+       fi
     fi
     
     # Expand to full size
@@ -586,8 +643,23 @@ VMEXECEOF
   # Save network configuration for the VM
   # Save network configuration for all VMs
   # Generate network configuration files
+  # This creates /.runcvm-network-eth0 (FC var format)
   generate_network_configs "$staging_dir"
   
+  # CRITICAL: Copy raw network device files for k8s init script
+  # runcvm-vm-init-k8s expects /.runcvm/network/devices/eth0
+  if [ -d "/.runcvm/network" ]; then
+       log "  Copying network config to rootfs..."
+       busybox mkdir -p "${staging_dir}/.runcvm/network"
+       busybox cp -a "/.runcvm/network/"* "${staging_dir}/.runcvm/network/"
+       log "    Copied /.runcvm/network"
+  fi
+  
+  # CRITICAL: Create /.runcvm/console file
+  # runcvm-vm-init-k8s reads this to set up inittab
+  echo "ttyS0" > "${staging_dir}/.runcvm/console"
+  log "    Created /.runcvm/console (ttyS0)"
+
   # Inject Systemd Service for Entrypoint
   if [ "$RUNCVM_SYSTEMD" = "1" ] || [ "$RUNCVM_SYSTEMD" = "true" ]; then
     log "  Systemd enabled: Injecting runcvm-entrypoint service..."
@@ -897,17 +969,22 @@ fi # End Cache Miss/No Cache logic
         log "  Network ($DOCKER_IF): $tap_name ($fc_mac) -> $bridge_name"
         
         # Create TAP device for Firecracker if it doesn't exist
-        if ! ip link show "$tap_name" >/dev/null 2>&1; then
+        log "DEBUG: PATH=$PATH"
+        log "DEBUG: check ip: $(which ip 2>&1 || echo 'not in path')"
+        log "DEBUG: ls -l /.runcvm/guest/sbin/ip: $(ls -l /.runcvm/guest/sbin/ip 2>&1 || echo 'missing')"
+        log "DEBUG: ldd /.runcvm/guest/sbin/ip: $(ldd /.runcvm/guest/sbin/ip 2>&1 || echo 'ldd failed')"
+
+        if ! /.runcvm/guest/sbin/ip link show "$tap_name" >/dev/null 2>&1; then
            log "    Creating TAP device $tap_name..."
-           ip tuntap add dev "$tap_name" mode tap
+           /.runcvm/guest/sbin/ip tuntap add dev "$tap_name" mode tap
         fi
         
         # Add TAP to the bridge
         log "    Adding $tap_name to bridge $bridge_name..."
-        ip link set dev "$tap_name" master "$bridge_name"
+        /.runcvm/guest/sbin/ip link set dev "$tap_name" master "$bridge_name"
         
         # Set MTU and bring up
-        ip link set dev "$tap_name" up mtu "${DOCKER_IF_MTU:-1500}"
+        /.runcvm/guest/sbin/ip link set dev "$tap_name" up mtu "${DOCKER_IF_MTU:-1500}"
         
         # Add IP alias to bridge to allow container-to-VM communication (e.g. docker exec)
         # We pick 172.17.0.254 (or derived from network) to be on the same subnet as VM.
@@ -974,7 +1051,7 @@ fi # End Cache Miss/No Cache logic
         ip addr del 169.254.1.1/32 dev "$bridge_name" 2>/dev/null || true
         
         log "    Adding connectivity alias $alias_ip to $bridge_name"
-        if ip addr add "$alias_ip/$net_prefix" dev "$bridge_name"; then
+        if /.runcvm/guest/sbin/ip addr add "$alias_ip/$net_prefix" dev "$bridge_name"; then
             log "    Alias added successfully"
             
             # CRITICAL FIX: Flush the original Container IP from the bridge AND the interface.
@@ -982,18 +1059,18 @@ fi # End Cache Miss/No Cache logic
             # as Local delivery, causing "Connection Refused" (or Host Unreachable loop).
             # By removing it, we force the kernel to route via the bridge (using the Alias for subnet).
             log "    Flushing conflicting container IP $DOCKER_IF_IP from $bridge_name and $DOCKER_IF..."
-            if [ "$RUNCVM_LOG_LEVEL" = "DEBUG" ]; then ip addr show; fi
-            ip addr del "$DOCKER_IF_IP/$net_prefix" dev "$bridge_name" 2>/dev/null || true
-            ip addr del "$DOCKER_IF_IP/32" dev "$bridge_name" 2>/dev/null || true
+            if [ "$RUNCVM_LOG_LEVEL" = "DEBUG" ]; then /.runcvm/guest/sbin/ip addr show; fi
+            /.runcvm/guest/sbin/ip addr del "$DOCKER_IF_IP/$net_prefix" dev "$bridge_name" 2>/dev/null || true
+            /.runcvm/guest/sbin/ip addr del "$DOCKER_IF_IP/32" dev "$bridge_name" 2>/dev/null || true
             # Also flush from the slave interface (Docker might put it there)
-            ip addr del "$DOCKER_IF_IP/$net_prefix" dev "$DOCKER_IF" 2>/dev/null || true
-            ip addr del "$DOCKER_IF_IP/32" dev "$DOCKER_IF" 2>/dev/null || true
+            /.runcvm/guest/sbin/ip addr del "$DOCKER_IF_IP/$net_prefix" dev "$DOCKER_IF" 2>/dev/null || true
+            /.runcvm/guest/sbin/ip addr del "$DOCKER_IF_IP/32" dev "$DOCKER_IF" 2>/dev/null || true
             
             # Restore Default Route (lost when flushing IPs)
             # This ensures the container namespace (host side) has internet access via the bridge
             if [ -n "$DOCKER_IF_IP_GW" ]; then
                 log "    Restoring default route via $DOCKER_IF_IP_GW dev $bridge_name"
-                ip route add default via "$DOCKER_IF_IP_GW" dev "$bridge_name" 2>/dev/null || true
+                /.runcvm/guest/sbin/ip route add default via "$DOCKER_IF_IP_GW" dev "$bridge_name" 2>/dev/null || true
             fi
         else
             log "    ERROR: Failed to add alias (Exit $?)"
@@ -1002,9 +1079,9 @@ fi # End Cache Miss/No Cache logic
         # Debug: show bridge and tap status
         if [ "$RUNCVM_LOG_LEVEL" = "DEBUG" ]; then
           log "    Bridge status:"
-          ip link show "$bridge_name" 2>&1 | busybox sed 's/^/      /'
+          /.runcvm/guest/sbin/ip link show "$bridge_name" 2>&1 | busybox sed 's/^/      /'
           log "    TAP status:"
-          ip link show "$tap_name" 2>&1 | busybox sed 's/^/      /'
+          /.runcvm/guest/sbin/ip link show "$tap_name" 2>&1 | busybox sed 's/^/      /'
         fi
         
         # Add MASQUERADE rule for outbound traffic from the VM (for the default gateway interface)

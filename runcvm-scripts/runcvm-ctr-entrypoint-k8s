@@ -21,8 +21,12 @@ if [[ "$RUNCVM_BREAK" =~ (prenet|postnet) ]]; then set -x; fi
 
 
 # SAVE ENTRYPOINT
-args=("$@")
-printf "%s\n" "${args[@]}" >/.runcvm/entrypoint
+# SAVE ENTRYPOINT
+# POSIX-compliant argument saving (avoid bash arrays)
+rm -f /.runcvm/entrypoint
+for arg in "$@"; do
+  echo "$arg" >> /.runcvm/entrypoint
+done
 
 # SET HOME ENV VAR IF NEEDED
 # (Same logic as Docker for HOME handling in case it's not set)
@@ -78,21 +82,21 @@ setup_kubernetes_bridge() {
   # Robust parsing: Extract IPv4 specifically and handle potential delays
   
   # Helper to access fields safely
-  local JSON_raw=$(ip -json addr show "$POD_IF")
+  # REPLACED JSON PARSING WITH TEXT PARSING (Busybox Compatible)
   
-  # 1. IP Address (IPv4)
-  IF_IP=$(echo "$JSON_raw" | jq -r '.[0].addr_info[] | select(.family == "inet") | .local' | head -n 1)
-  
-  # 2. Prefix Len
-  IF_PREFIX=$(echo "$JSON_raw" | jq -r '.[0].addr_info[] | select(.family == "inet") | .prefixlen' | head -n 1)
+  # 1. IP Address & Prefix
+  # Output: inet 10.42.0.5/24 ...
+  IF_INFO=$(/.runcvm/guest/sbin/ip addr show dev "$POD_IF" | grep "inet " | head -n 1)
+  IF_IP=$(echo "$IF_INFO" | awk '{print $2}' | cut -d/ -f1)
+  IF_PREFIX=$(echo "$IF_INFO" | awk '{print $2}' | cut -d/ -f2)
   
   # 3. MAC
-  IF_MAC=$(echo "$JSON_raw" | jq -r '.[0].address')
+  # Output: link/ether 02:42:ac:11:00:02
+  IF_MAC=$(/.runcvm/guest/sbin/ip link show dev "$POD_IF" | grep "link/ether" | awk '{print $2}')
   
   # 4. MTU
-  IF_MTU=$(echo "$JSON_raw" | jq -r '.[0].mtu')
-  
-  # Fallback/Retry Loop (Wait up to 15s for IP)
+  # Output: mtu 1500
+  IF_MTU=$(/.runcvm/guest/sbin/ip link show dev "$POD_IF" | head -n 1 | grep -o 'mtu [0-9]*' | cut -d' ' -f2)
   local retries=0
   while [ -z "$IF_IP" ] || [ "$IF_IP" = "null" ]; do
      if [ "$retries" -ge 30 ]; then break; fi
@@ -102,36 +106,38 @@ setup_kubernetes_bridge() {
      sleep 0.5
      
      # Retry extraction
-     JSON_raw=$(ip -json addr show "$POD_IF")
-     IF_IP=$(echo "$JSON_raw" | jq -r '.[0].addr_info[] | select(.family == "inet") | .local' | head -n 1)
-     IF_PREFIX=$(echo "$JSON_raw" | jq -r '.[0].addr_info[] | select(.family == "inet") | .prefixlen' | head -n 1)
+     IF_INFO=$(/.runcvm/guest/sbin/ip addr show dev "$POD_IF" | grep "inet " | head -n 1)
+     IF_IP=$(echo "$IF_INFO" | awk '{print $2}' | cut -d/ -f1)
+     IF_PREFIX=$(echo "$IF_INFO" | awk '{print $2}' | cut -d/ -f2)
      retries=$((retries + 1))
   done
   
   # Final Fallback (ip awk)
   if [ -z "$IF_IP" ] || [ "$IF_IP" = "null" ]; then
     log_info "WARNING: JSON parsing failed/timeout. Trying text fallback..."
-    IF_IP=$(ip -4 -o addr show dev "$POD_IF" | awk '{split($4,a,"/"); print a[1]}')
-    IF_PREFIX=$(ip -4 -o addr show dev "$POD_IF" | awk '{split($4,a,"/"); print a[2]}')
+    IF_IP=$(/.runcvm/guest/sbin/ip -4 -o addr show dev "$POD_IF" | awk '{split($4,a,"/"); print a[1]}')
+    IF_PREFIX=$(/.runcvm/guest/sbin/ip -4 -o addr show dev "$POD_IF" | awk '{split($4,a,"/"); print a[2]}')
   fi
   
   if [ -z "$IF_IP" ]; then
      # RESTART CHECK: If br-eth0 exists, the IP might have moved there!
      # OR we stored it in the interface alias (metadata persistence)
-     if ip link show "br-$POD_IF" >/dev/null 2>&1; then
+     if /.runcvm/guest/sbin/ip link show "br-$POD_IF" >/dev/null 2>&1; then
          local BRIDGE="br-$POD_IF"
          log_info "Bridge $BRIDGE detected. Checking for recovered IP..."
          
          # 1. Check IP on bridge (in case we left it there in a variant)
-         JSON_raw=$(ip -json addr show "$BRIDGE")
-         IF_IP=$(echo "$JSON_raw" | jq -r '.[0].addr_info[] | select(.family == "inet") | .local' | head -n 1)
-         IF_PREFIX=$(echo "$JSON_raw" | jq -r '.[0].addr_info[] | select(.family == "inet") | .prefixlen' | head -n 1)
+         IF_INFO=$(/.runcvm/guest/sbin/ip addr show dev "$BRIDGE" | grep "inet " | head -n 1)
+         IF_IP=$(echo "$IF_INFO" | awk '{print $2}' | cut -d/ -f1)
+         IF_PREFIX=$(echo "$IF_INFO" | awk '{print $2}' | cut -d/ -f2)
          
          # 2. Check Interface Alias (Our persistence strategy)
          if [ -z "$IF_IP" ] || [ "$IF_IP" = "null" ]; then
             # Extract alias from links
             # ip -json link show br-eth0 -> .[0].ifalias
-            IF_ALIAS=$(ip -json link show "$BRIDGE" | jq -r '.[0].ifalias')
+            # Extract alias from links
+            # ip link show output: ... alias "IP=..."
+            IF_ALIAS=$(/.runcvm/guest/sbin/ip link show dev "$BRIDGE" | grep " alias " | sed 's/.*alias //')
             if [ -n "$IF_ALIAS" ] && [ "$IF_ALIAS" != "null" ]; then
                 log_info "Found Interface Alias: $IF_ALIAS"
                 # Parse: IP=1.2.3.4 PREFIX=24 GW=1.2.3.1
@@ -172,17 +178,17 @@ setup_kubernetes_bridge() {
         
         # We still need Gateway.
         # If we have route information preserved in kernel (ip route), use it.
-        CURRENT_GW=$(ip route show default | awk '{print $3}')
+        # If we have route information preserved in kernel (ip route), use it.
+        CURRENT_GW=$(/.runcvm/guest/sbin/ip route show default | awk '{print $3}')
         if [ -n "$CURRENT_GW" ]; then GW_IP="$CURRENT_GW"; fi
      fi
   fi
   
   if [ -z "$IF_IP" ]; then
      log_error "Could not find IP for $POD_IF. Networking may fail."
+     log_error "Could not find IP for $POD_IF. Networking may fail."
      log_error "--- DEBUG: ip addr output ---"
-     ip addr show | while read line; do log_error "$line"; done
-     log_error "--- DEBUG: link alias ---"
-     ip -json link show | jq -r '.[] | .ifname + ": " + (.ifalias // "null")' | while read line; do log_error "$line"; done
+     /.runcvm/guest/sbin/ip addr show | while read line; do log_error "$line"; done
      log_error "-----------------------------"
   fi
   
@@ -204,9 +210,9 @@ setup_kubernetes_bridge() {
   fi
   
   # Identify Gateway
-  GW_IP=$(ip -json route show | jq -r '.[] | select(.dst == "default") | .gateway')
+  GW_IP=$(/.runcvm/guest/sbin/ip route show | grep default | awk '{print $3}')
   if [ -z "$GW_IP" ] || [ "$GW_IP" = "null" ]; then
-     GW_IP=$(ip route show default | awk '{print $3}')
+     GW_IP=$(/.runcvm/guest/sbin/ip route show default | awk '{print $3}')
   fi
   
   log_info "Pod Network: IP=$IF_IP/$IF_PREFIX GW=$GW_IP MAC=$IF_MAC MTU=$IF_MTU"
@@ -325,20 +331,22 @@ EOF
   
   # IMPLEMENTATION (Mirroring Docker Logic):
   
-  ip addr flush dev "$POD_IF"
+  # IMPLEMENTATION (Mirroring Docker Logic):
+  
+  /.runcvm/guest/sbin/ip addr flush dev "$POD_IF"
   
   BRIDGE="br-eth0"
-  if ! ip link show "$BRIDGE" >/dev/null 2>&1; then
-      ip link add "$BRIDGE" type bridge forward_delay 0 ageing 0 2>/dev/null || true
+  if ! /.runcvm/guest/sbin/ip link show "$BRIDGE" >/dev/null 2>&1; then
+      /.runcvm/guest/sbin/ip link add "$BRIDGE" type bridge forward_delay 0 ageing 0 2>/dev/null || true
   fi
   
   # Set Interface Alias to persist IP info across Container Restarts (within same NetNS)
   log_info "Saving network state to bridge alias..."
-  ip link set dev "$BRIDGE" alias "IP=$IF_IP PREFIX=$IF_PREFIX GW=$GW_IP" || log_info "WARNING: Failed to set interface alias"
+  /.runcvm/guest/sbin/ip link set dev "$BRIDGE" alias "IP=$IF_IP PREFIX=$IF_PREFIX GW=$GW_IP" || log_info "WARNING: Failed to set interface alias"
 
-  ip link set dev "$POD_IF" master "$BRIDGE"
-  ip link set dev "$POD_IF" up
-  ip link set dev "$BRIDGE" up
+  /.runcvm/guest/sbin/ip link set dev "$POD_IF" master "$BRIDGE"
+  /.runcvm/guest/sbin/ip link set dev "$POD_IF" up
+  /.runcvm/guest/sbin/ip link set dev "$BRIDGE" up
   
   # VM gets the Real IP (via init script).
   # We give the Bridge a dummy IP so we can route LOCALLY if needed.
@@ -346,18 +354,19 @@ EOF
   
   # Private IP for Bridge
   BRIDGE_IP="169.254.1.1"
-  ip addr add "$BRIDGE_IP/32" dev "$BRIDGE"
+  /.runcvm/guest/sbin/ip addr add "$BRIDGE_IP/32" dev "$BRIDGE"
   
   # Add Route to Pod Gateway via Bridge
   # We need to tell kernel that GW_IP is reachable on link.
-  ip route add "$GW_IP/32" dev "$BRIDGE" scope link
-  ip route add default via "$GW_IP" dev "$BRIDGE"
+  /.runcvm/guest/sbin/ip route add "$GW_IP/32" dev "$BRIDGE" scope link
+  /.runcvm/guest/sbin/ip route add default via "$GW_IP" dev "$BRIDGE"
   
   # Now, we need the VM (which will have IF_IP) to be reachable.
   # Since VM is on bridge, it is on L2.
   # kubectl exec (socat) needs to connect from THIS namespace to Pod IP (on VM)
   log_info "Adding route to Pod IP ($IF_IP) via bridge..."
-  ip route add "$IF_IP/32" dev "$BRIDGE" scope link
+  log_info "Adding route to Pod IP ($IF_IP) via bridge..."
+  /.runcvm/guest/sbin/ip route add "$IF_IP/32" dev "$BRIDGE" scope link
   
   log_info "Bridge $BRIDGE configured."
 }

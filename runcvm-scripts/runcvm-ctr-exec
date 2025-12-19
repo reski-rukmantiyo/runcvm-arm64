@@ -158,7 +158,9 @@ fi
 
 # Debug client key
 # Verify client key permissions
-if [ "$CURRENT_LOG_LEVEL" -le "${LOG_LEVELS[DEBUG]}" ]; then
+# Fixed: LOG_LEVELS array removed, use numeric comparison directly or CURRENT_LOG_LEVEL
+# DEBUG is 0
+if [ "${CURRENT_LOG_LEVEL:-999}" -le 0 ]; then
   log_debug "Client Key Check:"
   ls -la /.runcvm/dropbear/key >&2
 fi
