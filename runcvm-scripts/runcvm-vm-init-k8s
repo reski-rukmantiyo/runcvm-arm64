@@ -61,22 +61,12 @@ SSHD_PORT="${SSHD_PORT:-22222}"
 
 # === DROPBEAR SSH (Started Early for VSOCK Access) ===
 _T "starting dropbear"
-mkdir -p /.runcvm/dropbear
 if [ ! -f /.runcvm/dropbear/key ]; then
   # Create dropbear RSA public/private key pair
   KEY_PUBLIC=$(dropbearkey -t ed25519 -f /.runcvm/dropbear/key 2>/dev/null | grep ^ssh | cut -d' ' -f2)
   # Create json for dropbear EPKA module
-  cat <<_EOE_ >/.runcvm/dropbear/epka.json && chmod 400 /.runcvm/dropbear/epka.json
-[
-    {
-        "user": "root",
-        "keytype": "ssh-ed25519",
-        "key": "$KEY_PUBLIC",
-        "options":"no-X11-forwarding",
-        "comments": ""
-    }
-]
-_EOE_
+  printf '[\n    {\n        "user": "root",\n        "keytype": "ssh-ed25519",\n        "key": "%s",\n        "options":"no-X11-forwarding",\n        "comments": ""\n    }\n]\n' "$KEY_PUBLIC" > /.runcvm/dropbear/epka.json
+  chmod 400 /.runcvm/dropbear/epka.json
 fi
 
 echo "[GUEST-INIT] Starting dropbear on port $SSHD_PORT..." > /dev/console
@@ -181,51 +171,9 @@ fi
 ip link set lo up
 _T "after network up"
 
-# KUBERNETES VM NETWORKING
-# ==============================================================================
-# In Kubernetes mode, we use a single bridge interface.
-# The `eth0` config file contains the IP details.
-
-if [ -f "/.runcvm/network/devices/eth0" ]; then
-  read IF IF_MAC IF_MTU IF_IP IF_PREFIX IF_GW < "/.runcvm/network/devices/eth0"
-  
-  if [ -n "$IF_IP" ]; then
-    _T "configuring eth0"
-    
-    # Check if interface name is different (e.g. ens3 vs eth0)
-    # Firecracker usually gives 'eth0'
-    REAL_IF=$(ls /sys/class/net/ | grep -vE '^(lo|docker)' | head -n 1)
-    
-    if [ "$REAL_IF" != "eth0" ] && [ -n "$REAL_IF" ]; then
-       ip link set "$REAL_IF" down
-       ip link set "$REAL_IF" name eth0
-       ip link set eth0 up
-    else
-       ip link set eth0 up
-    fi
-    
-    # Assign IP
-    ip addr add "$IF_IP/$IF_PREFIX" dev eth0
-    ip link set eth0 mtu "${IF_MTU:-1500}"
-    
-    # Add Gateway
-    if [ -n "$IF_GW" ]; then
-       ip route add "$IF_GW/32" dev eth0 scope link || true
-       ip route add default via "$IF_GW"
-    fi
-    
-    _T "eth0 configured"
-  else
-    echo "Warning: No IP found in /.runcvm/network/devices/eth0"
-  fi
-  
-else
-  echo "Warning: /network/devices/eth0 missing, falling back to DHCP..."
-  # Ensure eth0 is UP before DHCP
-  ip link set eth0 up
-  udhcpc -i eth0 -n -q 
-fi
-_T "after network setup"
+# KUBERNETES VM NETWORKING (Removed duplicate block)
+# Network is already configured in "CONFIGURE ETHERNET (eth0)" block above.
+# The code below was causing "Address already assigned" errors.
 
 # No complex route files needed - default GW handles it
 

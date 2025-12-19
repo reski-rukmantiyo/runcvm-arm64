@@ -157,7 +157,13 @@ if [ -L "$ARGS_INIT" ]; then
     ARGS_INIT=$(readlink -f "$ARGS_INIT")
 fi
 
-if [[ "$ARGS_INIT" =~ /systemd$ ]]; then
+# Check if init is systemd
+case "$ARGS_INIT" in
+  */systemd) ;;
+  *) ;;
+esac
+
+# if [[ "$ARGS_INIT" =~ /systemd$ ]]; then ...
   cgroupfs_mount "${RUNCVM_CGROUPFS:-none}"
 else
   cgroupfs_mount "${RUNCVM_CGROUPFS:-hybrid}"

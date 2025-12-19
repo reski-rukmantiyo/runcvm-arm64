@@ -68,7 +68,7 @@ error() {
 
 
 clean_env() {
-  export -n \
+  unset \
   RUNCVM_BREAK RUNCVM_INIT \
   RUNCVM_GUEST \
   RUNCVM_RUNTIME_DEBUG \
@@ -83,7 +83,7 @@ clean_env() {
   RUNCVM_CGROUPFS
 
   # May be set in VM by busybox init process
-  export -n USER
+  unset USER
 }
 
 load_network() {
