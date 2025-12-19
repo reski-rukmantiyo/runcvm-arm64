@@ -969,10 +969,7 @@ fi # End Cache Miss/No Cache logic
         log "  Network ($DOCKER_IF): $tap_name ($fc_mac) -> $bridge_name"
         
         # Create TAP device for Firecracker if it doesn't exist
-        log "DEBUG: PATH=$PATH"
-        log "DEBUG: check ip: $(which ip 2>&1 || echo 'not in path')"
-        log "DEBUG: ls -l /.runcvm/guest/sbin/ip: $(ls -l /.runcvm/guest/sbin/ip 2>&1 || echo 'missing')"
-        log "DEBUG: ldd /.runcvm/guest/sbin/ip: $(ldd /.runcvm/guest/sbin/ip 2>&1 || echo 'ldd failed')"
+
 
         if ! /.runcvm/guest/sbin/ip link show "$tap_name" >/dev/null 2>&1; then
            log "    Creating TAP device $tap_name..."
