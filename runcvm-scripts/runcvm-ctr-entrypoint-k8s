@@ -353,8 +353,11 @@ EOF
   # But wait, if we want to reach the VM from localhost (e.g. `kubectl exec`), we need a route.
   
   # Private IP for Bridge
-  BRIDGE_IP="169.254.1.1"
-  /.runcvm/guest/sbin/ip addr add "$BRIDGE_IP/32" dev "$BRIDGE"
+  # CRITICAL: Do NOT assign 169.254.1.1 to the bridge!
+  # This IP is the upstream Gateway. If the bridge has it, it intercepts packets (L3)
+  # and breaks L2 bridging/authentication.
+  # BRIDGE_IP="169.254.1.1"
+  # /.runcvm/guest/sbin/ip addr add "$BRIDGE_IP/32" dev "$BRIDGE"
   
   # Add Route to Pod Gateway via Bridge
   # We need to tell kernel that GW_IP is reachable on link.
