@@ -425,41 +425,36 @@ if [ "$COMMAND" = "create" ]; then
     
     # Build NFS volumes string for environment variable
     NFS_VOLUMES=""
+    NFS_HOST_EXPORT_LIST=""
     
-    # Use process substitution to avoid subshell (so NFS_PORT persists)
+    # First pass: Aggregate all valid bind mounts for NFS
     while IFS=: read -r src dst; do
       [ -z "$src" ] && continue
       [ -z "$dst" ] && continue
       case "$dst" in
         /etc/resolv.conf|/etc/hosts|/etc/hostname) continue ;;
+        /dev/shm|/dev/termination-log|/var/run/secrets/*) continue ;;
       esac
       case "$src" in
-        */.runcvm*) continue ;;
+        */.runcvm*|*/shm|*/kube-api-access*) continue ;;
       esac
+      
       if [ -e "$src" ]; then
+        # Check for duplicates in the current list
+        if echo "$NFS_VOLUMES" | grep -q "${src}:${dst}"; then
+          continue
+        fi
+
         log "FIRECRACKER:   Volume: $src -> $dst"
         [ "$RUNCVM_LOG_LEVEL" = "DEBUG" ] && echo "[DEBUG] FIRECRACKER: Volume: $src -> $dst (port $NFS_PORT)" >&2
-        [ "$RUNCVM_LOG_LEVEL" = "DEBUG" ] && echo "[DEBUG] FIRECRACKER: Volume: $src -> $dst (port $NFS_PORT)" >&2
         
-        # Build env var (pipe-separated for multiple volumes)
+        # Build env var for guest (pipe-separated)
         if [ -n "$NFS_VOLUMES" ]; then
           NFS_VOLUMES="${NFS_VOLUMES}|${src}:${dst}:${NFS_PORT}"
+          NFS_HOST_EXPORT_LIST="${NFS_HOST_EXPORT_LIST} ${src}"
         else
           NFS_VOLUMES="${src}:${dst}:${NFS_PORT}"
-        fi
-        
-        # Start NFS daemon on HOST for this volume
-        if [ -x /opt/runcvm/scripts/runcvm-nfsd ]; then
-          log "FIRECRACKER: Starting HOST unfsd for $src (port $NFS_PORT)..."
-          [ "$RUNCVM_LOG_LEVEL" = "DEBUG" ] && echo "[DEBUG] Starting unfsd: $src port=$NFS_PORT uid=$CONTAINER_UID" >&2
-          
-          # Export RUNCVM_LOG_LEVEL so runcvm-nfsd can use it
-          export RUNCVM_LOG_LEVEL
-          /opt/runcvm/scripts/runcvm-nfsd start "$ID" "$src" "$dst" "$NFS_PORT" "$CONTAINER_UID" "$CONTAINER_GID" "$$" 2>&1
-          NFS_PORT=$((NFS_PORT + 2))
-        else
-          log "WARNING: runcvm-nfsd not found at /opt/runcvm/scripts/runcvm-nfsd"
-          [ "$RUNCVM_LOG_LEVEL" = "DEBUG" ] && echo "[DEBUG] ERROR: runcvm-nfsd not found!" >&2
+          NFS_HOST_EXPORT_LIST="${src}"
         fi
       fi
     done < <(jq -r --arg vm "$RUNCVM_VM_MOUNTPOINT" '
@@ -468,6 +463,22 @@ if [ "$COMMAND" = "create" ]; then
       select(.destination | startswith($vm + "/")) |
       "\(.source):\(.destination | ltrimstr($vm))"
     ' "$CFG" 2>/dev/null)
+
+    # Start NFS daemon on HOST for all volumes (one instance per container)
+    if [ -n "$NFS_HOST_EXPORT_LIST" ]; then
+      if [ -x /opt/runcvm/scripts/runcvm-nfsd ]; then
+        log "FIRECRACKER: Starting HOST unfsd for all volumes (port $NFS_PORT)..."
+        [ "$RUNCVM_LOG_LEVEL" = "DEBUG" ] && echo "[DEBUG] Starting unfsd with exports: $NFS_HOST_EXPORT_LIST port=$NFS_PORT uid=$CONTAINER_UID" >&2
+        
+        # Export RUNCVM_LOG_LEVEL so runcvm-nfsd can use it
+        export RUNCVM_LOG_LEVEL
+        /opt/runcvm/scripts/runcvm-nfsd start "$ID" "$NFS_HOST_EXPORT_LIST" "multi" "$NFS_PORT" "$CONTAINER_UID" "$CONTAINER_GID" "$$" 2>&1
+        NFS_PORT=$((NFS_PORT + 2))
+      else
+        log "WARNING: runcvm-nfsd not found at /opt/runcvm/scripts/runcvm-nfsd"
+        [ "$RUNCVM_LOG_LEVEL" = "DEBUG" ] && echo "[DEBUG] ERROR: runcvm-nfsd not found!" >&2
+      fi
+    fi
     
     # Pass NFS volumes via environment variable (bypasses file path issues)
     if [ -n "$NFS_VOLUMES" ]; then

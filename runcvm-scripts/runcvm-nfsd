@@ -62,21 +62,23 @@ start_nfsd() {
     return 0
   fi
   
-  # Validate volume path exists
-  if [ ! -d "$volume_path" ]; then
-    log "ERROR: Volume path does not exist: $volume_path"
-    return 1
-  fi
+  # Validate volume paths
+  for vol in $volume_path; do
+    if [ ! -d "$vol" ]; then
+      log "ERROR: Volume path does not exist: $vol"
+      return 1
+    fi
+  done
   
   # Create exports file
   # Format: /path (options)
   # all_squash maps all UIDs to the specified anonuid/anongid
   cat > "$exports_file" << EOF
-$volume_path (rw,all_squash,anonuid=$uid,anongid=$gid)
+$(for vol in $volume_path; do echo "$vol (rw,all_squash,anonuid=$uid,anongid=$gid)"; done)
 EOF
   
   log "Starting unfsd for container $container_id"
-  log "  Volume: $volume_path -> $mount_path"
+  log "  Volumes: $volume_path"
   log "  Port: $port (mount: $((port+1)))"
   log "  UID mapping: all -> $uid:$gid"
   
