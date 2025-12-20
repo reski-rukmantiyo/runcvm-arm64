@@ -44,13 +44,14 @@ RUNCVM_CONTAINER_MEM_OVERHEAD="256" # Memory (Mb) overhead to allow for Firecrac
 # Configure Logger for Runtime
 RUNCVM_COMPONENT_NAME="RunCVM-Runtime"
 RUNCVM_LOG_FILE="/var/log/runcvm.debug"
+export RUNCVM_LOG_LEVEL="${RUNCVM_LOG_LEVEL:-DEBUG}"
 
 # Source logging functions
 . "$RUNCVM/scripts/common/logging.sh"
 
-# log_info "=========================================="
-# log_info "RunCVM Runtime invoked at $(date)"
-# log_info "ARGS: ${COMMAND_LINE[@]@Q}"
+log_info "=========================================="
+log_info "RunCVM Runtime invoked at $(date)"
+log_info "ARGS: $*"
 
 
 # ============================================================

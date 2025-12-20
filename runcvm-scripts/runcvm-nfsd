@@ -18,6 +18,17 @@ set -e
 
 RUNCVM_NFS_DIR="${RUNCVM_NFS_DIR:-/run/runcvm-nfs}"
 LOG_DIR="${RUNCVM_NFS_DIR}/logs"
+RUNCVM=${RUNCVM:-/opt/runcvm}
+
+# Set up bundled library paths for unfsd and other tools
+export LD_LIBRARY_PATH="$RUNCVM/lib:$RUNCVM/usr/lib:${LD_LIBRARY_PATH}"
+
+# Check for bundled dynamic linker
+if [ -x "$RUNCVM/lib/ld-musl-aarch64.so.1" ]; then
+    RUNCVM_LD="$RUNCVM/lib/ld-musl-aarch64.so.1"
+else
+    RUNCVM_LD=""
+fi
 
 # Ensure directories exist
 mkdir -p "$RUNCVM_NFS_DIR" "$LOG_DIR"
@@ -73,20 +84,30 @@ EOF
   # -e = exports file
   # -n = NFS port
   # -m = mount port
-  # Check for unfsd binary
+  # -p = do not register with portmap/rpcbind (CRITICAL for non-systemd hosts)
+  # -t = TCP only (avoid UDP registration errors)
   # Check for unfsd binary
   local unfsd_bin=""
-  if [ -x "/usr/sbin/unfsd" ]; then
+  if [ -x "$RUNCVM/sbin/unfsd" ]; then
+    unfsd_bin="$RUNCVM/sbin/unfsd"
+  elif [ -x "/usr/sbin/unfsd" ]; then
     unfsd_bin="/usr/sbin/unfsd"
   elif [ -x "/usr/local/sbin/unfsd" ]; then
     unfsd_bin="/usr/local/sbin/unfsd"
   else
-     log "ERROR: unfsd binary not found at /usr/sbin/unfsd or /usr/local/sbin/unfsd."
+     log "ERROR: unfsd binary not found at $RUNCVM/sbin/unfsd, /usr/sbin/unfsd or /usr/local/sbin/unfsd."
      log "       Please install unfs3 on the host (or disable NFS)."
      return 1
   fi
 
-  "$unfsd_bin" -d -e "$exports_file" -n "$port" -m "$((port+1))" \
+  # Run via bundled linker if available
+  if [ -n "$RUNCVM_LD" ]; then
+    unfsd_cmd="$RUNCVM_LD $unfsd_bin"
+  else
+    unfsd_cmd="$unfsd_bin"
+  fi
+
+  $unfsd_cmd -d -p -t -e "$exports_file" -n "$port" -m "$((port+1))" \
     > "$log_file" 2>&1 &
   
   local pid=$!

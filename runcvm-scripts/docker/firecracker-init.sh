@@ -9,11 +9,23 @@ INITEOF
 # Firecracker minimal init for RunCVM
 # This runs as PID 1 inside the Firecracker VM
 
+# Mount essential filesystems at the very beginning
+mount -t proc proc /proc 2>/dev/null || true
+mount -t sysfs sys /sys 2>/dev/null || true
+mount -t devtmpfs dev /dev 2>/dev/null || true
+
 # ============================================================
-# LOGGING SYSTEM (sh-compatible)
+# LOGGING & PROFILING SYSTEM (sh-compatible)
 # ============================================================
 
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# Boot timing profiler
+_T() { 
+  local t=$(cat /proc/uptime | cut -d' ' -f1)
+  echo "$t $1" >> /.runcvm/timing.log
+}
+_T "vm-init-start"
 
 # Try to load RUNCVM_LOG_LEVEL from config if it exists
 
@@ -97,6 +109,11 @@ if [ -f /.runcvm/config ]; then
 fi
 
 log INFO "Starting... (Log Level: '$RUNCVM_LOG_LEVEL')"
+_T "starting-init"
+
+# Remount / as rw (Firecracker may start as ro)
+mount -o remount,rw / 2>/dev/null || true
+_T "remount-rw"
 
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
@@ -113,12 +130,8 @@ if is_debug; then
   fi
 fi
 
-# Mount essential filesystems
-mount -t proc proc /proc 2>/dev/null || true
-mount -t sysfs sys /sys 2>/dev/null || true
-mount -t devtmpfs dev /dev 2>/dev/null || true
-
-# Create essential device nodes if devtmpfs failed
+# Essential device nodes creation if devtmpfs failed
+# (Moved down after basic mounts)
 if [ ! -c /dev/null ]; then
   mknod -m 666 /dev/null c 1 3
   mknod -m 666 /dev/zero c 1 5
@@ -144,8 +157,36 @@ mount -t tmpfs tmpfs /tmp -o mode=1777,strictatime,nosuid,nodev 2>/dev/null || t
 mkdir -p /run/lock
 
 # Mount cgroup v2 (Systemd requirement)
-mkdir -p /sys/fs/cgroup
-mount -t cgroup2 cgroup2 /sys/fs/cgroup 2>/dev/null || true
+# mkdir -p /sys/fs/cgroup
+# mount -t cgroup2 cgroup2 /sys/fs/cgroup 2>/dev/null || true
+_T "mounting-cgroups"
+# Ported Advanced Cgroup handling from K8s init
+if [ -f "$RUNCVM_GUEST/scripts/functions/cgroupfs" ]; then
+    . "$RUNCVM_GUEST/scripts/functions/cgroupfs"
+    # Detect if systemd (needed for cgroup choice)
+    ARGS_INIT=""
+    [ -f /.runcvm/entrypoint ] && read -r ARGS_INIT < /.runcvm/entrypoint
+    
+    case "$ARGS_INIT" in
+      */systemd) cgroupfs_mount "${RUNCVM_CGROUPFS:-none}" ;;
+      *) cgroupfs_mount "${RUNCVM_CGROUPFS:-hybrid}" ;;
+    esac
+else
+    # Fallback to simple cgroup v2 mount
+    mkdir -p /sys/fs/cgroup
+    mount -t cgroup2 cgroup2 /sys/fs/cgroup 2>/dev/null || true
+fi
+_T "cgroups-ready"
+
+# FSTAB Support (Ported from K8s init)
+if [ -f /.runcvm/fstab ]; then
+  log INFO "Mounting filesystems from /.runcvm/fstab..."
+  busybox modprobe ext4 2>/dev/null || true
+  mount -a --fstab /.runcvm/fstab -o X-mount.mkdir 2>/dev/null || true
+  # Now mount our fstab over /etc/fstab for future use
+  mount --bind /.runcvm/fstab /etc/fstab 2>/dev/null || true
+  _T "fstab-mounted"
+fi
 
 # Create symlinks
 # Create symlinks
@@ -345,7 +386,7 @@ for iface_path in /sys/class/net/eth*; do
           
           if [ -n "$FC_GW" ] && [ "$FC_GW" != "-" ]; then
              log INFO "  Adding default gateway $FC_GW"
-             $IP_CMD route add default via "$FC_GW" dev "$IFACE"
+             $IP_CMD route add default via "$FC_GW" dev "$IFACE" onlink
              
              # If this is the default GW interface, add the bridge route for 9P too
              # (This is mostly relevant for the primary interface)
