@@ -448,13 +448,18 @@ if [ "$COMMAND" = "create" ]; then
         log "FIRECRACKER:   Volume: $src -> $dst"
         [ "$RUNCVM_LOG_LEVEL" = "DEBUG" ] && echo "[DEBUG] FIRECRACKER: Volume: $src -> $dst (port $NFS_PORT)" >&2
         
+        # Build paths for unfsd (inside container)
+        # Note: $dst here is the path relative to the VM root, e.g. /test-mount
+        # Inside the container, these are at $RUNCVM_VM_MOUNTPOINT/$dst
+        container_path="${RUNCVM_VM_MOUNTPOINT}${dst}"
+
         # Build env var for guest (pipe-separated)
         if [ -n "$NFS_VOLUMES" ]; then
-          NFS_VOLUMES="${NFS_VOLUMES}|${src}:${dst}:${NFS_PORT}"
-          NFS_HOST_EXPORT_LIST="${NFS_HOST_EXPORT_LIST} ${src}"
+          NFS_VOLUMES="${NFS_VOLUMES}|${container_path}:${dst}:${NFS_PORT}"
+          NFS_HOST_EXPORT_LIST="${NFS_HOST_EXPORT_LIST} ${container_path}"
         else
-          NFS_VOLUMES="${src}:${dst}:${NFS_PORT}"
-          NFS_HOST_EXPORT_LIST="${src}"
+          NFS_VOLUMES="${container_path}:${dst}:${NFS_PORT}"
+          NFS_HOST_EXPORT_LIST="${container_path}"
         fi
       fi
     done < <(jq -r --arg vm "$RUNCVM_VM_MOUNTPOINT" '
@@ -464,23 +469,28 @@ if [ "$COMMAND" = "create" ]; then
       "\(.source):\(.destination | ltrimstr($vm))"
     ' "$CFG" 2>/dev/null)
 
-    # Start NFS daemon on HOST for all volumes (one instance per container)
-    if [ -n "$NFS_HOST_EXPORT_LIST" ]; then
-      if [ -x /opt/runcvm/scripts/runcvm-nfsd ]; then
-        log "FIRECRACKER: Starting HOST unfsd for all volumes (port $NFS_PORT)..."
-        [ "$RUNCVM_LOG_LEVEL" = "DEBUG" ] && echo "[DEBUG] Starting unfsd with exports: $NFS_HOST_EXPORT_LIST port=$NFS_PORT uid=$CONTAINER_UID" >&2
-        
-        # Export RUNCVM_LOG_LEVEL so runcvm-nfsd can use it
-        export RUNCVM_LOG_LEVEL
-        /opt/runcvm/scripts/runcvm-nfsd start "$ID" "$NFS_HOST_EXPORT_LIST" "multi" "$NFS_PORT" "$CONTAINER_UID" "$CONTAINER_GID" "$$" 2>&1
-        NFS_PORT=$((NFS_PORT + 2))
-      else
-        log "WARNING: runcvm-nfsd not found at /opt/runcvm/scripts/runcvm-nfsd"
-        [ "$RUNCVM_LOG_LEVEL" = "DEBUG" ] && echo "[DEBUG] ERROR: runcvm-nfsd not found!" >&2
-      fi
+    # DEBUG: Log namespaces section to help troubleshoot extraction
+    if [ "$RUNCVM_LOG_LEVEL" = "DEBUG" ]; then
+      log "FIRECRACKER: OCI Namespaces: $(jq_get "$CFG" '.linux.namespaces')"
     fi
-    
-    # Pass NFS volumes via environment variable (bypasses file path issues)
+
+    # Pass NFS configuration to container via environment variables
+    # We will start unfsd from within the container context (on the host side of the VM setup)
+    # to ensure it is in the correct network namespace and can bind to the bridge IP.
+    if [ -n "$NFS_HOST_EXPORT_LIST" ]; then
+      log "FIRECRACKER: Preparing NFS configuration for container..."
+      set_config_env "RUNCVM_NFS_HOST_EXPORTS" "$NFS_HOST_EXPORT_LIST"
+      set_config_env "RUNCVM_NFS_PORT" "$NFS_PORT"
+      set_config_env "RUNCVM_NFS_UID" "$CONTAINER_UID"
+      set_config_env "RUNCVM_NFS_GID" "$CONTAINER_GID"
+      set_config_env "RUNCVM_CONTAINER_ID" "$ID"
+      
+      # We still need to increment NFS_PORT for internal accounting if we had multiple daemons,
+      # but here we use a single one per container.
+      NFS_PORT=$((NFS_PORT + 2))
+    fi
+
+    # Pass NFS volumes via environment variable for the guest VM
     if [ -n "$NFS_VOLUMES" ]; then
       log "FIRECRACKER: Setting RUNCVM_NFS_VOLUMES=$NFS_VOLUMES"
       [ "$RUNCVM_LOG_LEVEL" = "DEBUG" ] && echo "[DEBUG] FIRECRACKER: Setting RUNCVM_NFS_VOLUMES=$NFS_VOLUMES" >&2

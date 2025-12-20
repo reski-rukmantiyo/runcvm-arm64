@@ -1185,6 +1185,25 @@ fi # End Cache Miss/No Cache logic
                iptables -t nat -A POSTROUTING -s "$DOCKER_IF_IP" -o "$DOCKER_IF" -j MASQUERADE 2>/dev/null || true
              fi
         fi
+        # ============================================================
+        # START NFS DAEMON (Inside Container Namespace)
+        # ============================================================
+        if [ -n "$RUNCVM_NFS_HOST_EXPORTS" ] && [ -n "$RUNCVM_CONTAINER_ID" ]; then
+            log "    Starting HOST unfsd for NFS volumes (inside namespace)..."
+            if [ -x "$RUNCVM_GUEST/scripts/runcvm-nfsd" ]; then
+                # We are already in the correct network namespace, so we pass 0 for netns_pid
+                RUNCVM="$RUNCVM_GUEST" "$RUNCVM_GUEST/scripts/runcvm-nfsd" start \
+                    "$RUNCVM_CONTAINER_ID" \
+                    "$RUNCVM_NFS_HOST_EXPORTS" \
+                    "multi" \
+                    "${RUNCVM_NFS_PORT:-1024}" \
+                    "${RUNCVM_NFS_UID:-0}" \
+                    "${RUNCVM_NFS_GID:-0}" \
+                    "0" 2>&1 | busybox sed 's/^/      /'
+            else
+                log "    [WARNING] $RUNCVM_GUEST/scripts/runcvm-nfsd not found, cannot start NFS"
+            fi
+        fi
         fi
       
       # Build JSON object for this interface

@@ -114,8 +114,14 @@ EOF
   # Use nsenter if netns_pid is provided to join the container's network namespace
   local netns_prefix=""
   if [ -n "$netns_pid" ] && [ "$netns_pid" != "0" ]; then
-    log "  Joining network namespace of PID $netns_pid"
-    netns_prefix="nsenter -t $netns_pid -n"
+    log "  Joining network namespace: $netns_pid"
+    if [[ "$netns_pid" =~ ^/ ]]; then
+       # It's a path
+       netns_prefix="nsenter --net=$netns_pid"
+    else
+       # It's a PID
+       netns_prefix="nsenter -t $netns_pid -n"
+    fi
   fi
 
   $netns_prefix $unfsd_cmd -d -p -t -e "$exports_file" -n "$port" -m "$((port+1))" \
