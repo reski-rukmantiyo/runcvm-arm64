@@ -17,7 +17,7 @@ This document combines the technical findings, implementation details, and verif
 #### 2. Export Path Resolution
 - `unfsd` running inside a container sees paths relative to THAT container.
 - If the runtime mounts host `/tmp/foo` to `/vm/test-mount`, the NFS server must be told to export `/vm/test-mount`, NOT `/tmp/foo`.
-
+ 
 #### 3. NFS Client Dependencies (Guest side)
 An NFS mount requires more than just the `mount` command:
 - **`mount.nfs`**: The helper binary.
@@ -25,6 +25,18 @@ An NFS mount requires more than just the `mount` command:
 - **`/etc/netconfig`**: Required by `libtirpc` to resolve transport protocols (tcp, udp).
 - **`/etc/services`**: Maps service names (nfs, sunrpc) to ports.
 - **Kernel Support**: `CONFIG_NFS_FS` and `CONFIG_NFS_V3` must be enabled.
+
+#### 4. Multiple Volume Consolidation
+- **Problem**: Starting one `unfsd` per volume consumed multiple ports and made duplicate detection difficult.
+- **Solution**: Consolidated all volumes for a single container into a single `unfsd` instance. The `runcvm-nfsd` script was updated to generate a multi-line exports file.
+- **Filtering**: Implemented logic to filter out system-managed volumes (like `/dev/shm`, `/run`) and duplicate mount entries to avoid NFS export conflicts.
+
+#### 5. Tool Path Resolution in Containers
+- **Problem**: Inside the minimal container environment, basic tools like `busybox` were not in the default `PATH`.
+- **Solution**: Used absolute paths for bundled tools (e.g., `"$RUNCVM/bin/busybox"`) in host-side scripts that run within the container namespace.
+
+#### 6. Environment Variable Propagation
+- **Requirement**: Since `unfsd` startup was moved to the container launcher (`runcvm-ctr-firecracker-k8s`), the `runcvm-runtime` must explicitly set and pass configuration environment variables (e.g., `RUNCVM_NFS_HOST_EXPORTS`, `RUNCVM_NFS_PORT`) to the container.
 
 ### Documentation & Prerequisites
 
