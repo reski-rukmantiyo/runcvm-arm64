@@ -464,11 +464,12 @@ main() {
     fi
     
     # Copy usr/share (contains terminfo for ncurses programs like watch)
-    if [ -d "$RUNCVM_GUEST/usr/share" ]; then
-      busybox mkdir -p "${staging_dir}/.runcvm/guest/usr"
-      busybox cp -a "$RUNCVM_GUEST/usr/share" "${staging_dir}/.runcvm/guest/usr/"
-      log "    Copied usr/share/ (terminfo)"
-    fi
+    [ -d "$RUNCVM_GUEST/usr/share" ] && busybox mkdir -p "${staging_dir}/.runcvm/guest/usr" && busybox cp -a "$RUNCVM_GUEST/usr/share" "${staging_dir}/.runcvm/guest/usr/" && log "    Copied usr/share/ (terminfo)"
+    
+    # CRITICAL: mount.nfs and other RPC tools need these in /etc
+    busybox mkdir -p "$staging_dir/etc"
+    [ -f "$RUNCVM_GUEST/etc/netconfig" ] && busybox cp -p "$RUNCVM_GUEST/etc/netconfig" "$staging_dir/etc/" && log "    Copied /etc/netconfig"
+    [ -f "$RUNCVM_GUEST/etc/services" ] && busybox cp -p "$RUNCVM_GUEST/etc/services" "$staging_dir/etc/" && log "    Copied /etc/services"
     
     # Copy tmp/dropbear (contains EPKA library for SSH authentication)
     if [ -d "$RUNCVM_GUEST/tmp/dropbear" ]; then
@@ -853,7 +854,7 @@ DBUNITEOF
         for net_cfg in "$staging_dir"/.runcvm-network-*; do
           [ -f "$net_cfg" ] || continue
           log "    Updating $net_cfg: FC_GW=$alias_ip"
-          sed -i "s/^FC_GW=.*/FC_GW=\"$alias_ip\"/" "$net_cfg"
+          busybox sed -i "s/^FC_GW=.*/FC_GW=\"$alias_ip\"/" "$net_cfg"
         done
       fi
     fi

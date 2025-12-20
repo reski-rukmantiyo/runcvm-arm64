@@ -81,6 +81,7 @@ EOF
   log "  Volumes: $volume_path"
   log "  Port: $port (mount: $((port+1)))"
   log "  UID mapping: all -> $uid:$gid"
+  [ "$RUNCVM_LOG_LEVEL" = "DEBUG" ] && log "  Exports content:" && busybox cat "$exports_file" | while read -r line; do log "    $line"; done
   
   # Start unfsd
   # -d = debug mode (stay in foreground, but we background it)
