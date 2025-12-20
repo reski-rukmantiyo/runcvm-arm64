@@ -166,7 +166,7 @@ fi
 # DEBUG is 0
 if [ "${CURRENT_LOG_LEVEL:-999}" -le 0 ]; then
   log_debug "Client Key Check:"
-  ls -la /.runcvm/dropbear/key >&2
+  ls -la /.runcvm/dropbear/key >> "$RUNCVM_LOG_FILE" 2>/dev/null || true
 fi
 
 # Finally, execute the command via SSH

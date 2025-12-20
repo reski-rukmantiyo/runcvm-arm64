@@ -39,7 +39,20 @@ _log() {
   
   # Only log if severity meets threshold
   if [ "$severity_level" -ge "$CURRENT_LOG_LEVEL" ]; then
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [RunCVM] [$severity] $message" >&2
+    local log_entry="[$(date '+%Y-%m-%d %H:%M:%S')] [RunCVM] [$severity] $message"
+    
+    # Check if we should log to file
+    if [ -n "$RUNCVM_LOG_FILE" ] && [ "$RUNCVM_LOG_FILE" != "/dev/stderr" ]; then
+       echo "$log_entry" >> "$RUNCVM_LOG_FILE" 2>/dev/null || true
+    fi
+    
+    # Output to stderr if:
+    # 1. It is an ERROR
+    # 2. RUNCVM_LOG_FILE is NOT set
+    # 3. RUNCVM_LOG_STDERR=1 is set
+    if [ "$severity" = "ERROR" ] || [ -z "$RUNCVM_LOG_FILE" ] || [ "${RUNCVM_LOG_STDERR:-0}" = "1" ]; then
+       echo "$log_entry" >&2
+    fi
   fi
 }
 

@@ -160,6 +160,30 @@ exec >/dev/console 2>&1
 # Setup hostname
 [ -f /etc/hostname ] && hostname -F /etc/hostname 2>/dev/null || true
 
+# === EARLY VSOCK LISTENER START ===
+# Start VSOCK backdoor immediately to allow debugging even if init fails later
+# We forward VSOCK port 22 to the local SSH port 22222
+(
+  log INFO "Starting EARLY VSOCK listener on port 22..."
+  
+  SOCAT=""
+  # Prioritize the bundled socat-static if it exists
+  if [ -x "/.runcvm/guest/bin/socat-static" ]; then SOCAT="/.runcvm/guest/bin/socat-static"
+  elif command -v socat >/dev/null 2>&1; then SOCAT=socat
+  elif [ -x "/.runcvm/guest/bin/socat" ]; then SOCAT="/.runcvm/guest/bin/socat"
+  elif [ -x "/.runcvm/guest/usr/bin/socat" ]; then SOCAT="/.runcvm/guest/usr/bin/socat"
+  fi
+
+  if [ -n "$SOCAT" ]; then
+     # Wait for dropbear (it will start shortly)
+     $SOCAT VSOCK-LISTEN:22,fork TCP:127.0.0.1:22222,retry=20,interval=0.5 >> /dev/console 2>&1 &
+     log INFO "EARLY VSOCK listener started (PID $!)"
+  else
+     log INFO "WARNING: socat not found for EARLY VSOCK"
+  fi
+) &
+# ==================================
+
 # Setup networking
 log INFO "========== NETWORK SETUP START =========="
 

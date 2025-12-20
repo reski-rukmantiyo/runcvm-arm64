@@ -66,7 +66,7 @@ main() {
   log "Starting Firecracker microVM launcher... [VERSION: DEBUG-FORCE-V5]"
   log "Container command: $CMD_ARGS"
   # ==========================================================================
-  # STEP 0: Extract volumes and start 9P servers BEFORE creating rootfs
+  # STEP 0: Setup NFS volumes BEFORE creating rootfs
   # ==========================================================================
   
 
@@ -149,7 +149,7 @@ main() {
   local use_cache=0
 
   # Check if caching is globally enabled via env var (Default: 1/true)
-  # DEBUGGING: Force cache OFF to ensure fresh builds
+  # USER INSTRUCTION: DO NOT ENABLE RUNCVM CACHE
   local cache_active="0"
   
   if [ "$cache_active" = "1" ] || [ "$cache_active" = "true" ]; then
@@ -169,8 +169,6 @@ main() {
     
     # Create init script (always fresh)
     generate_init_script "${staging_dir}/init"
-    # KUBERNETES OVERRIDE: Use K8s-specific init script
-    busybox sed -i 's/runcvm-vm-init/runcvm-vm-init-k8s/g' "${staging_dir}/init"
 
     # Generate network configs for injection
     generate_network_configs "$staging_dir"

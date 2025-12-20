@@ -1,15 +1,5 @@
 #!/opt/runcvm/lib/ld-musl-aarch64.so.1 /opt/runcvm/bin/bash
 
-# DEBUG: Global Log Redirect
-exec >>/var/log/runcvm.debug 2>&1
-# set -x
-echo "=========================================="
-echo "RunCVM Runtime invoked at $(date)"
-echo "ARGS: $@"
-
-# DIAGNOSTIC: Dump environment to check for RUNCVM_LOG_LEVEL leakage
-env | grep RUNCVM > /tmp/runcvm-env-leak.log || true
-
 # REFERENCES
 
 # Virtiofs
@@ -53,10 +43,14 @@ RUNCVM_CONTAINER_MEM_OVERHEAD="256" # Memory (Mb) overhead to allow for Firecrac
 
 # Configure Logger for Runtime
 RUNCVM_COMPONENT_NAME="RunCVM-Runtime"
-RUNCVM_LOG_FILE="/opt/runcvm/runtime.log"
+RUNCVM_LOG_FILE="/var/log/runcvm.debug"
 
 # Source logging functions
 . "$RUNCVM/scripts/common/logging.sh"
+
+# log_info "=========================================="
+# log_info "RunCVM Runtime invoked at $(date)"
+# log_info "ARGS: ${COMMAND_LINE[@]@Q}"
 
 
 # ============================================================
@@ -147,8 +141,7 @@ log_debug "Command line: $0 ${COMMAND_LINE[@]@Q}"
 
 while true
 do
-  echo "DEBUG_ARG: '$1'"
-  echo -n "$1" | od -t c -t x1
+  :
   if [ "$1" = "--systemd-cgroup" ]; then shift; continue; fi
   case "$1" in
     --debug) shift; continue; ;;
@@ -245,6 +238,7 @@ if [ "$COMMAND" = "create" ]; then
 
   # Pending support for user-specified mountpoint for the guest (VM) binaries and scripts
   set_config_env "RUNCVM_GUEST" "$RUNCVM_GUEST"
+  set_config_env "RUNCVM_LOG_FILE" "/tmp/runcvm.debug"
 
   ARG0=$(jq_get "$CFG" '.process.args[0]')
   # Now look in mounts for destination == $ARG0 (this works for Docker and Podman)

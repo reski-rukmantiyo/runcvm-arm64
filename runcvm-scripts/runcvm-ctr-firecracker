@@ -51,7 +51,7 @@ RUNCVM_LOG_STDERR=1  # Enable stderr logging
 main() {
   log "Starting Firecracker microVM launcher... [VERSION: AUTH-FIX-V3]"
   # ==========================================================================
-  # STEP 0: Extract volumes and start 9P servers BEFORE creating rootfs
+  # STEP 0: Setup NFS volumes BEFORE creating rootfs
   # ==========================================================================
   
 
