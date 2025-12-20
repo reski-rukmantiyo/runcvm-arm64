@@ -49,6 +49,7 @@ start_nfsd() {
   local port="$4"
   local uid="${5:-0}"
   local gid="${6:-0}"
+  local netns_pid="${7:-}"
   
   # Use port-based naming to allow multiple instances per container
   local pid_file="$RUNCVM_NFS_DIR/$container_id-$port.pid"
@@ -107,7 +108,14 @@ EOF
     unfsd_cmd="$unfsd_bin"
   fi
 
-  $unfsd_cmd -d -p -t -e "$exports_file" -n "$port" -m "$((port+1))" \
+  # Use nsenter if netns_pid is provided to join the container's network namespace
+  local netns_prefix=""
+  if [ -n "$netns_pid" ] && [ "$netns_pid" != "0" ]; then
+    log "  Joining network namespace of PID $netns_pid"
+    netns_prefix="nsenter -t $netns_pid -n"
+  fi
+
+  $netns_prefix $unfsd_cmd -d -p -t -e "$exports_file" -n "$port" -m "$((port+1))" \
     > "$log_file" 2>&1 &
   
   local pid=$!
@@ -207,10 +215,10 @@ status_nfsd() {
 case "$1" in
   start)
     if [ $# -lt 5 ]; then
-      echo "Usage: $0 start <container-id> <volume-path> <mount-path> <port> [uid] [gid]"
+      echo "Usage: $0 start <container-id> <volume-path> <mount-path> <port> [uid] [gid] [netns-pid]"
       exit 1
     fi
-    start_nfsd "$2" "$3" "$4" "$5" "${6:-0}" "${7:-0}"
+    start_nfsd "$2" "$3" "$4" "$5" "${6:-0}" "${7:-0}" "${8:-}"
     ;;
   stop)
     if [ $# -lt 2 ]; then

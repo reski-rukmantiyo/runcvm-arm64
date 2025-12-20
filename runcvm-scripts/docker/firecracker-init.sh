@@ -130,6 +130,17 @@ if is_debug; then
   fi
 fi
 
+# Install mount.nfs wrapper so that mount(8) can find it
+if [ -f "/.runcvm/guest/sbin/mount.nfs" ]; then
+  log INFO "  Installing mount.nfs wrapper in /sbin/mount.nfs"
+  cat > /sbin/mount.nfs << 'MOUNTNFSEOF'
+#!/bin/sh
+# Wrapper for mount.nfs (uses BUNDELF dynamic linker)
+exec /.runcvm/guest/lib/ld /.runcvm/guest/sbin/mount.nfs "$@"
+MOUNTNFSEOF
+  chmod +x /sbin/mount.nfs
+fi
+
 # Essential device nodes creation if devtmpfs failed
 # (Moved down after basic mounts)
 if [ ! -c /dev/null ]; then

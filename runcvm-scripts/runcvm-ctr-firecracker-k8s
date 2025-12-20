@@ -1116,6 +1116,17 @@ fi # End Cache Miss/No Cache logic
         if /.runcvm/guest/sbin/ip addr add "$alias_ip/$net_prefix" dev "$bridge_name"; then
             log "    Alias added successfully"
             
+            # OVERRIDE GUEST GATEWAY for host communication (NFS)
+            # The guest network config files were generated earlier with the pod's default GW (e.g. 169.254.1.1).
+            # We must override FC_GW to use our $alias_ip so the guest can reach unfsd on the host bridge.
+            log "    Overriding guest gateway for host communication using alias $alias_ip"
+            for net_cfg in "$staging_dir"/.runcvm-network-*; do
+                [ -f "$net_cfg" ] || continue
+                log "      Updating $net_cfg: FC_GW=$alias_ip"
+                # Use sed to replace FC_GW value
+                sed -i "s/^FC_GW=.*/FC_GW=\"$alias_ip\"/" "$net_cfg"
+            done
+
             # CRITICAL FIX: Flush the original Container IP from the bridge AND the interface.
             # If we keep it, the kernel treats traffic to VM (which has the same IP) 
             # as Local delivery, causing "Connection Refused" (or Host Unreachable loop).
