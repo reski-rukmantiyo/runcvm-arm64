@@ -931,65 +931,14 @@ fi # End Cache Miss/No Cache logic
         # Implementation:
         net_prefix="${DOCKER_IF_IP_NETPREFIX:-16}"
         
-        # Calculate dynamic alias IP to avoid hardcoding 172.17.255.254
-        # We try to use the last IP in the subnet (Broadcast - 1) or similar.
-        # Since we have minimal tools (busybox), we can use python enabled in image or ipcalc
-        # 'ipcalc' in busybox: ipcalc -b 172.17.0.2/16 -> BROADCAST=172.17.255.255
+        # DEPRECATED: alias_ip assignment is removed to avoid interrupting L2 bridging.
+        log "    Skipping bridge alias assignment (Transparent L2 mode enabled)"
         
-        if command -v ipcalc >/dev/null 2>&1; then
-           # Use Busybox ipcalc (wrap in || true to prevent set -e crash)
-           local bcast=$(ipcalc -b "$DOCKER_IF_IP/$net_prefix" 2>/dev/null | cut -d= -f2 || true)
-           if [ -n "$bcast" ]; then
-              # Subtract 1 from broadcast using awk (sed might be missing)
-              # If last octet is 255, make it 254. Otherwise subtract 1.
-              # Trim potential whitespace from bcast
-              alias_ip=$(echo "$bcast" | tr -d ' ' | awk -F. 'BEGIN{OFS="."} {if ($4==255) $4=254; else $4=$4-1; print}')
-           else
-              base_ip=$(echo "$DOCKER_IF_IP" | cut -d. -f1-3)
-              alias_ip="${base_ip}.254"
-           fi
-        else
-            base_ip=$(echo "$DOCKER_IF_IP" | cut -d. -f1-3)
-            alias_ip="${base_ip}.254"
-        fi
-
-        # CLEANUP: Remove interfering SNAT rules and IPs that break routing
-        log "    Cleaning up default SNAT rules and Link-Local IP..."
-        # Remove bad SNAT for SSH port 22222
-        if [ -n "$RUNCVM_GUEST" ] && [ -d "$RUNCVM_GUEST/usr/lib/xtables" ]; then
-            XTABLES_LIBDIR=$RUNCVM_GUEST/usr/lib/xtables xtables-nft-multi iptables \
-              -t nat -D POSTROUTING -p tcp -m tcp --dport 22222 -j SNAT --to-source 169.254.169.254 2>/dev/null || true
-        else
-            iptables -t nat -D POSTROUTING -p tcp -m tcp --dport 22222 -j SNAT --to-source 169.254.169.254 2>/dev/null || true
-        fi
-        
-        # Remove Link-Local IP from bridge to force usage of our Alias
-        ip addr del 169.254.1.1/32 dev "$bridge_name" 2>/dev/null || true
-        
-        log "    Adding connectivity alias $alias_ip to $bridge_name"
-        if ip addr add "$alias_ip/$net_prefix" dev "$bridge_name"; then
-            log "    Alias added successfully"
-            
-            # CRITICAL FIX: Flush the original Container IP from the bridge AND the interface.
-            # If we keep it, the kernel treats traffic to VM (which has the same IP) 
-            # as Local delivery, causing "Connection Refused" (or Host Unreachable loop).
-            # By removing it, we force the kernel to route via the bridge (using the Alias for subnet).
-            log "    Flushing conflicting container IP $DOCKER_IF_IP from $bridge_name and $DOCKER_IF..."
-            if [ "$RUNCVM_LOG_LEVEL" = "DEBUG" ]; then ip addr show; fi
-            ip addr del "$DOCKER_IF_IP/$net_prefix" dev "$bridge_name" 2>/dev/null || true
-            ip addr del "$DOCKER_IF_IP/32" dev "$bridge_name" 2>/dev/null || true
-            # Also flush from the slave interface (Docker might put it there)
-            ip addr del "$DOCKER_IF_IP/$net_prefix" dev "$DOCKER_IF" 2>/dev/null || true
-            ip addr del "$DOCKER_IF_IP/32" dev "$DOCKER_IF" 2>/dev/null || true
-            
-            # Restore Default Route (lost when flushing IPs)
-            # This ensures the container namespace (host side) has internet access via the bridge
-            if [ -n "$DOCKER_IF_IP_GW" ]; then
-                log "    Restoring default route via $DOCKER_IF_IP_GW dev $bridge_name"
-                ip route add default via "$DOCKER_IF_IP_GW" dev "$bridge_name" 2>/dev/null || true
-            fi
-        else
-            log "    ERROR: Failed to add alias (Exit $?)"
+        # Restore Default Route (lost when flushing IPs)
+        # This ensures the container namespace (host side) has internet access via the bridge
+        if [ -n "$DOCKER_IF_IP_GW" ]; then
+            log "    Restoring default route via $DOCKER_IF_IP_GW dev $bridge_name"
+            ip route add default via "$DOCKER_IF_IP_GW" dev "$bridge_name" 2>/dev/null || true
         fi
       
         # Debug: show bridge and tap status
