@@ -50,11 +50,11 @@ Once the VM boots, the guest init system eventually calls `runcvm-vm-start`. Thi
 
 ### "No entrypoint found" Error
 If you see `[VM-START] No entrypoint found, sleeping` in the logs, it usually means:
-1.  **Path Mismatch**: The host script saved the entrypoint to a location different from where the guest script expects it (e.g., `/.runcvm-entrypoint` vs `/.runcvm/entrypoint`).
-2.  **Mount Issues**: The host-side captured file was not correctly included in the `mke2fs` staging directory.
+1.  **Path Mismatch:** The entrypoint was not found at the expected path `/.runcvm/entrypoint`. (Previously, some initial versions of the init script looked for `/.runcvm-entrypoint`).
+2.  **Injection Failure:** The host-side captured file was not correctly included in the `mke2fs` staging directory or the `debugfs` injection failed.
 
 ### Logging Visibility
-Host-side logs for the launcher are captured by the container runtime (e.g., `containerd` in K3s) and visible via `kubectl logs`.
+Host-side logs for the launcher are captured by the container runtime (e.g., `containerd` in K3s) and visible via `kubectl logs`. Setting `RUNCVM_LOG_LEVEL=DEBUG` in the Pod environment is essential for detailed tracing.
 
 > [!TIP]
 > If `kubectl logs` is empty despite the pod being `Running`, the log level might be too low. Set `RUNCVM_LOG_LEVEL=DEBUG` in your Pod environment.
