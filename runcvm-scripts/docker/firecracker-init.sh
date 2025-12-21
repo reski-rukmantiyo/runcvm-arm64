@@ -436,6 +436,19 @@ fi
 
 log INFO "========== NETWORK SETUP END =========="
 
+# Setup DNS
+if [ -f /.runcvm-resolv.conf ]; then
+  cp /.runcvm-resolv.conf /etc/resolv.conf 2>/dev/null || true
+fi
+
+if [ -f /.runcvm/entrypoint ] && [ -s /.runcvm/entrypoint ]; then
+  # Read entrypoint line by line into an array-like structure
+  set --
+  while IFS= read -r line || [ -n "$line" ]; do
+    set -- "$@" "$line"
+  done < /.runcvm/entrypoint
+fi
+
 # ========== DROPBEAR SSH (VM SIDE) ==========
 # Start dropbear inside the VM for docker exec support
 log INFO "Starting Dropbear SSH server..."
@@ -767,12 +780,12 @@ if [ "$SHOULD_RUN_SYSTEMD" = "1" ] && [ -n "$SYSTEMD_BIN" ]; then
    fi
 fi
 
-if [ -f /.runcvm-entrypoint ] && [ -s /.runcvm-entrypoint ]; then
+if [ -f /.runcvm/entrypoint ] && [ -s /.runcvm/entrypoint ]; then
   # Read entrypoint line by line into an array-like structure
   set --
   while IFS= read -r line || [ -n "$line" ]; do
     set -- "$@" "$line"
-  done < /.runcvm-entrypoint
+  done < /.runcvm/entrypoint
   
   log INFO "Running saved entrypoint: $@"
   run_with_tty "$@"

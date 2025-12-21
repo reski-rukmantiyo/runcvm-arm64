@@ -184,8 +184,8 @@ main() {
     # The cached rootfs has a stale entrypoint. We must overwrite it with the current one.
     if command -v debugfs >/dev/null 2>&1 && [ -f "$entrypoint_file" ]; then
        # Run debugfs to update entrypoint (surpress output unless error)
-       debugfs -w -R "rm /.runcvm-entrypoint" "$rootfs_path" >/dev/null 2>&1 || true
-       if ! debugfs -w -R "write $entrypoint_file /.runcvm-entrypoint" "$rootfs_path" >/dev/null 2>&1; then
+       debugfs -w -R "rm /.runcvm/entrypoint" "$rootfs_path" >/dev/null 2>&1 || true
+       if ! debugfs -w -R "write $entrypoint_file /.runcvm/entrypoint" "$rootfs_path" >/dev/null 2>&1; then
           log "  [WARNING] Failed to update entrypoint in rootfs"
        fi
     fi
