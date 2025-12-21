@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 # runcvm-nfsd - Host-side NFS daemon manager for RunCVM
 #
 # This script runs on the HOST machine (not in container) and manages
@@ -115,13 +115,16 @@ EOF
   local netns_prefix=""
   if [ -n "$netns_pid" ] && [ "$netns_pid" != "0" ]; then
     log "  Joining network namespace: $netns_pid"
-    if [[ "$netns_pid" =~ ^/ ]]; then
-       # It's a path
-       netns_prefix="nsenter --net=$netns_pid"
-    else
-       # It's a PID
-       netns_prefix="nsenter -t $netns_pid -n"
-    fi
+    case "$netns_pid" in
+      /*)
+         # It's a path
+         netns_prefix="nsenter --net=$netns_pid"
+         ;;
+      *)
+         # It's a PID
+         netns_prefix="nsenter -t $netns_pid -n"
+         ;;
+    esac
   fi
 
   $netns_prefix $unfsd_cmd -d -p -t -e "$exports_file" -n "$port" -m "$((port+1))" \
