@@ -3,7 +3,9 @@ generate_init_script() {
   
   cat > "$init_script" << INITEOF
 #!${RUNCVM_GUEST}/bin/sh
-export RUNCVM_LOG_LEVEL="${RUNCVM_LOG_LEVEL:-OFF}"
+echo "RUNCVM_INIT_MARKER: STARTING GENERATED INIT"
+export RUNCVM_LOG_LEVEL="${RUNCVM_LOG_LEVEL:-DEBUG}"
+echo "RUNCVM_INIT_MARKER: LOG_LEVEL IS $RUNCVM_LOG_LEVEL"
 INITEOF
   cat >> "$init_script" << 'INITEOF'
 # Firecracker minimal init for RunCVM
@@ -35,47 +37,10 @@ _T "vm-init-start"
 # users who want silent logs can set RUNCVM_LOG_LEVEL=OFF
 RUNCVM_LOG_LEVEL="${RUNCVM_LOG_LEVEL:-OFF}"
 
-# Logging function (simplified for sh)
-# Logging function (simplified for sh)
 log() {
   local severity="$1"
   shift
-  local message="$*"
-  
-  # Strict OFF Check
-  if [ "$RUNCVM_LOG_LEVEL" = "OFF" ]; then
-      # If OFF, silently return unless it is a CRITICAL ERROR that we must force-show
-      # The user requested OFF to be OFF.
-      # Only show ERROR if RUNCVM_LOG_LEVEL=ERROR or higher (DEBUG/INFO/ERROR).
-      # If OFF(999), we should logically hide everything. BUT if the system is crashing...
-      # Standard convention: OFF means nothing but panic.
-      # The 'error' function usually exits. Here we just log.
-      if [ "$severity" = "ERROR" ]; then
-         # Only show error if severity is explicitly ERROR
-         echo "[$(date '+%Y-%m-%d %H:%M:%S')] [RunCVM-FC-Init] [$severity] $message"
-      fi
-      return
-  fi
-  
-  # DEBUG shows everything
-  if [ "$RUNCVM_LOG_LEVEL" = "DEBUG" ]; then
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [RunCVM-FC-Init] [$severity] $message"
-    return
-  fi
-
-  # LOG/INFO shows INFO and ERROR
-  case "$RUNCVM_LOG_LEVEL" in
-    INFO|LOG)
-      if [ "$severity" = "INFO" ] || [ "$severity" = "ERROR" ]; then
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] [RunCVM-FC-Init] [$severity] $message"
-      fi
-      ;;
-    ERROR)
-      if [ "$severity" = "ERROR" ]; then
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] [RunCVM-FC-Init] [$severity] $message"
-      fi
-      ;;
-  esac
+  echo "[RunCVM-FC-Init] [$severity] $*"
 }
 
 # Helper function to redirect output based on log level
@@ -109,6 +74,7 @@ if [ -f /.runcvm/config ]; then
 fi
 
 log INFO "Starting... (Log Level: '$RUNCVM_LOG_LEVEL')"
+echo "RUNCVM_INIT_MARKER: REACHED LOG INFO 111"
 _T "starting-init"
 
 # Remount / as rw (Firecracker may start as ro)
@@ -206,8 +172,10 @@ ln -sf /proc/self/fd/0 /dev/stdin 2>/dev/null || true
 ln -sf /proc/self/fd/1 /dev/stdout 2>/dev/null || true
 ln -sf /proc/self/fd/2 /dev/stderr 2>/dev/null || true
 
-# Force all output to console (now that devices exist)
-exec >/dev/console 2>&1
+# Force all output to serial console (Firecracker default)
+# This ensures logs are captured by the host-side launcher
+exec >/dev/ttyS0 2>&1
+echo "RUNCVM_INIT_MARKER: REDIRECTED TO ttyS0"
 
 # Setup hostname
 [ -f /etc/hostname ] && hostname -F /etc/hostname 2>/dev/null || true
@@ -398,11 +366,11 @@ for iface_path in /sys/class/net/eth*; do
           if [ -n "$FC_GW" ] && [ "$FC_GW" != "-" ]; then
              log INFO "  Adding default gateway $FC_GW"
              $IP_CMD route add default via "$FC_GW" dev "$IFACE" onlink
-             
-             # If this is the default GW interface, add the bridge route for 9P too
-             # (This is mostly relevant for the primary interface)
-             $IP_CMD route add 169.254.1.1/32 dev "$IFACE" 2>/dev/null || true
-          fi
+                          # If this is the default GW interface, add the bridge route for 9P/NFS too
+              # (This is mostly relevant for the primary interface)
+              $IP_CMD route add 169.254.1.1/32 dev "$IFACE" 2>/dev/null || true
+              $IP_CMD route add 169.254.1.254/32 dev "$IFACE" 2>/dev/null || true
+           fi
           
        elif [ "$USE_IFCONFIG" = "1" ]; then
           # Basic ifconfig support
@@ -506,9 +474,10 @@ mount_nfs_volumes() {
   if [ -f "/.runcvm-network-eth0" ]; then
      unset FC_GW
      . "/.runcvm-network-eth0"
-     if [ -n "$FC_GW" ] && [ "$FC_GW" != "-" ]; then
-       host_ip="$FC_GW"
-     fi
+      if [ -n "$FC_GW" ] && [ "$FC_GW" != "-" ]; then
+        # Default to gateway, but we will check for the dedicated host IP later
+        host_ip="$FC_GW"
+      fi
   fi
   
   # If not found in eth0, try others
@@ -530,6 +499,13 @@ mount_nfs_volumes() {
     host_ip="172.17.0.1"
   fi
   
+  # Use the dedicated host IP (169.254.1.254) if it responds to ARP/ping, or fallback to gateway
+  # This dedicated IP is used in K8s mode to avoid gateway conflicts.
+  if /.runcvm/guest/sbin/ip route get 169.254.1.254 >/dev/null 2>&1; then
+       log INFO "  Detected dedicated host IP 169.254.1.254, using for NFS"
+       host_ip="169.254.1.254"
+  fi
+
   log INFO "Checking for NFS volumes..."
   log INFO "  Host IP (for NFS): $host_ip"
   
@@ -772,7 +748,7 @@ if [ "$SHOULD_RUN_SYSTEMD" = "1" ] && [ -n "$SYSTEMD_BIN" ]; then
        
        RET=$?
        log INFO "Systemd exited with code $RET"
-       busybox poweroff -f
+       runcvm_busybox poweroff -f || /sbin/reboot -f || poweroff -f
    else
        log INFO "'unshare' not found, falling back to exec (PID 1)"
        # Execute systemd - this REPLACES the init process
@@ -811,7 +787,7 @@ fi
 # OR if run_with_tty was not an exec (which it is currently)
 RET=$?
 log INFO "Entrypoint exited with code $RET"
-busybox poweroff -f
+runcvm_busybox poweroff -f || /sbin/reboot -f || poweroff -f
 INITEOF
 
   busybox chmod +x "$init_script"

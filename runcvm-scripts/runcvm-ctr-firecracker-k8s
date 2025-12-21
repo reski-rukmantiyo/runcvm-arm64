@@ -1078,8 +1078,11 @@ fi # End Cache Miss/No Cache logic
         # Implementation:
         net_prefix="${DOCKER_IF_IP_NETPREFIX:-16}"
         
-        # DEPRECATED: alias_ip assignment is removed to avoid interrupting L2 bridging.
-        log "    Skipping bridge alias assignment (Transparent L2 mode enabled)"
+        # Restore Host IP to bridge for NFS and docker exec
+        # We use a static IP that doesn't conflict with any likely pod subnet
+        local host_bridge_ip="169.254.1.254/32"
+        log "    Assigning host IP $host_bridge_ip to $bridge_name for NFS/Exec..."
+        /.runcvm/guest/sbin/ip addr add "$host_bridge_ip" dev "$bridge_name" 2>/dev/null || true
         
         # SNAT cleanup should still be done if relevant, but the IP deletion is the main point.
 
@@ -1127,6 +1130,7 @@ fi # End Cache Miss/No Cache logic
             else
                 log "    [WARNING] $RUNCVM_GUEST/scripts/runcvm-nfsd not found, cannot start NFS"
             fi
+        fi
         fi
       
       # Build JSON object for this interface
