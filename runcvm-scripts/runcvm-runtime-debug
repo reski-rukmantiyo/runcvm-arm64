@@ -1,0 +1,11 @@
+#!/bin/sh
+# Debug Wrapper for RunCVM Runtime
+# Forces RUNCVM_LOG_LEVEL=DEBUG and calls the main runtime
+
+export RUNCVM_LOG_LEVEL=DEBUG
+export RUNCVM_RUNTIME_DEBUG=1
+
+# Execute the main runtime script
+# We assume this script is in the same directory as runcvm-runtime
+DIR="$(dirname "$0")"
+exec "$DIR/runcvm-runtime" "$@"

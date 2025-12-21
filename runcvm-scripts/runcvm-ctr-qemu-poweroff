@@ -1,0 +1,5 @@
+#!/bin/sh
+# runcvm-ctr-qemu-poweroff
+# Gracefully shuts down the VM via ACPI or magic functionality if available
+# For now, just a placeholder or calls poweroff
+poweroff -f

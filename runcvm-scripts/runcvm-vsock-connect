@@ -1,0 +1,47 @@
+#!/bin/sh
+# runcvm-vsock-connect
+# Connects to Firecracker UDS, handles handshake, and forwards IO unbuffered.
+
+UDS_PATH="$1"
+PORT="$2"
+
+if [ -z "$UDS_PATH" ] || [ -z "$PORT" ]; then
+  echo "Usage: $0 <uds_path> <port>" >&2
+  exit 1
+fi
+
+# Detect socat
+if command -v socat >/dev/null 2>&1; then
+    SOCAT_BIN="socat"
+elif [ -x "/.runcvm/guest/usr/bin/socat" ]; then
+    SOCAT_BIN="/.runcvm/guest/usr/bin/socat"
+else
+    echo "Error: socat not found" >&2
+    exit 1
+fi
+
+# Pipeline Explanation:
+# 1. Input: { Handshake + Client Data (unbuffered via socat) }
+# 2. Connection: socat connects to UDS
+# 3. Output: { Read "OK" line + Server Data (unbuffered via socat) }
+
+{ printf "CONNECT %s\n" "$PORT"; $SOCAT_BIN -u STDIN -; } | \
+$SOCAT_BIN UNIX-CONNECT:"$UDS_PATH" - | \
+{
+    # Read the first line (Handshake response "OK <port>")
+    # 'read' reads byte-by-byte on pipes in widely used shells (busybox ash, bash)
+    # effectively not over-reading.
+    IFS= read -r line
+    
+    # Check if handshake successful
+    case "$line" in
+        OK*) 
+            # Handshake OK. Forward the rest of the stream unbuffered.
+            $SOCAT_BIN -u STDIN STDOUT
+            ;;
+        *)
+            echo "Error: Firecracker Handshake Failed: $line" >&2
+            exit 1
+            ;;
+    esac
+}

@@ -7,11 +7,11 @@
 # This avoids the self-copy problem where mke2fs would copy the rootfs into itself
 
 set -o errexit -o pipefail
-set -o errexit -o pipefail
-set -x # Debug tracing disabled for production speed
+# set -x # Debug tracing disabled for production speed
 
 # Load original environment
-unset RUNCVM_LOG_LEVEL
+# NOTE: Keep RUNCVM_LOG_LEVEL from pod environment for debugging
+# unset RUNCVM_LOG_LEVEL  # DISABLED: We want pod env to propagate
 . /.runcvm/config
 
 # Load defaults
@@ -37,19 +37,34 @@ RUNCVM_LOG_STDERR=1  # Enable stderr logging
 # Source common logging
 . "$RUNCVM_GUEST/scripts/common/logging.sh"
 
-
-
-
 # Source Firecracker modules
 . "$RUNCVM_GUEST/scripts/docker/firecracker-disk.sh"
 . "$RUNCVM_GUEST/scripts/docker/firecracker-network.sh"
 . "$RUNCVM_GUEST/scripts/docker/firecracker-config.sh"
 . "$RUNCVM_GUEST/scripts/docker/firecracker-init.sh"
 
+# EARLY DEBUG
+log "DEBUG: Global scope /.runcvm check:"
+ls -la /.runcvm | while read line; do log "  $line"; done
+if [ -f /.runcvm/entrypoint ]; then
+    log "DEBUG: /.runcvm/entrypoint exists globally"
+else
+    log "DEBUG: /.runcvm/entrypoint MISSING globally"
+fi
+
 
 # Main function
 main() {
-  log "Starting Firecracker microVM launcher... [VERSION: AUTH-FIX-V3]"
+  export RUNCVM_LOG_LEVEL=DEBUG
+  
+  local CMD_ARGS="$*"
+  # If no args, default to sleep to keep VM alive for debug
+  if [ -z "$CMD_ARGS" ]; then
+    CMD_ARGS="/bin/sleep 1000"
+  fi
+  
+  log "Starting Firecracker microVM launcher... [VERSION: DEBUG-FORCE-V5]"
+  log "Container command: $CMD_ARGS"
   # ==========================================================================
   # STEP 0: Setup NFS volumes BEFORE creating rootfs
   # ==========================================================================
@@ -129,12 +144,13 @@ main() {
   local entrypoint_file="/.runcvm/entrypoint"
   local staging_dir="/tmp/rootfs-staging"
   # Append version to invalidate old caches with stale init scripts
-  local cache_key="${RUNCVM_CACHE_KEY}-v4"
+  local cache_key="${RUNCVM_CACHE_KEY}-v7"
   local cache_file=""
   local use_cache=0
 
   # Check if caching is globally enabled via env var (Default: 1/true)
-  local cache_active="${ROOTFS_CACHE_ACTIVE:-1}"
+  # USER INSTRUCTION: DO NOT ENABLE RUNCVM CACHE
+  local cache_active="0"
   
   if [ "$cache_active" = "1" ] || [ "$cache_active" = "true" ]; then
       if [ -n "$cache_key" ] && [ -d "/.runcvm/cache" ]; then
@@ -167,20 +183,11 @@ main() {
     # INJECT CURRENT ENTRYPOINT
     # The cached rootfs has a stale entrypoint. We must overwrite it with the current one.
     if command -v debugfs >/dev/null 2>&1 && [ -f "$entrypoint_file" ]; then
-       log "Injecting entrypoint: $entrypoint_file -> /.runcvm/entrypoint"
-       
-       # Ensure /.runcvm directory exists
-       if ! debugfs -w -R "mkdir /.runcvm" "$rootfs_path"; then
-          log "  [WARNING] Failed to mkdir /.runcvm in rootfs"
-       fi
-
        # Run debugfs to update entrypoint (surpress output unless error)
-       debugfs -w -R "rm /.runcvm/entrypoint" "$rootfs_path" || true
-       if ! debugfs -w -R "write $entrypoint_file /.runcvm/entrypoint" "$rootfs_path"; then
-          log "  [ERROR] Failed to update entrypoint in rootfs"
+       debugfs -w -R "rm /.runcvm/entrypoint" "$rootfs_path" >/dev/null 2>&1 || true
+       if ! debugfs -w -R "write $entrypoint_file /.runcvm/entrypoint" "$rootfs_path" >/dev/null 2>&1; then
+          log "  [WARNING] Failed to update entrypoint in rootfs"
        fi
-    else
-        log "[WARNING] Skipping entrypoint injection. debugfs=$(command -v debugfs), file=$entrypoint_file (exists? $([ -f "$entrypoint_file" ] && echo yes || echo no))"
     fi
     
     # INJECT FRESH PRIVATE KEY (CRITICAL so init script derives correct pubkey)
@@ -232,6 +239,63 @@ main() {
        fi
        
        busybox rm -f "$auth_keys_tmp"
+       busybox rm -f "$auth_keys_tmp"
+    fi
+    
+    # INJECT CONSOLE FILE (CRITICAL for init script)
+    # The cached rootfs might be missing /.runcvm/console. Inject it.
+    if command -v debugfs >/dev/null 2>&1; then
+       local console_tmp="/tmp/console.$$"
+       echo "ttyS0" > "$console_tmp"
+       
+       debugfs -w -R "mkdir /.runcvm" "$rootfs_path" >/dev/null 2>&1 || true
+       debugfs -w -R "rm /.runcvm/console" "$rootfs_path" >/dev/null 2>&1 || true
+       if ! debugfs -w -R "write $console_tmp /.runcvm/console" "$rootfs_path" >/dev/null 2>&1; then
+          log "  [WARNING] Failed to inject console file into cached rootfs"
+       else
+          log "  Injected console file into cached rootfs"
+       fi
+       busybox rm -f "$console_tmp"
+       busybox rm -f "$console_tmp"
+    fi
+    
+    # INJECT CONFIG, PWD (CRITICAL for s6-applyuidgid and cd)
+    if command -v debugfs >/dev/null 2>&1; then
+       # Ensure directory exists first
+       debugfs -w -R "mkdir /.runcvm" "$rootfs_path" >/dev/null 2>&1 || true
+
+       # CONFIG
+       if [ -f "/.runcvm/config" ]; then
+          debugfs -w -R "rm /.runcvm/config" "$rootfs_path" >/dev/null 2>&1 || true
+          if ! debugfs -w -R "write /.runcvm/config /.runcvm/config" "$rootfs_path" >/dev/null 2>&1; then
+             log "  [WARNING] Failed to inject /.runcvm/config into cached rootfs"
+          else
+             log "  Injected /.runcvm/config"
+          fi
+       fi
+       
+       # PWD
+       if [ -f "/.runcvm/pwd" ]; then
+          debugfs -w -R "rm /.runcvm/pwd" "$rootfs_path" >/dev/null 2>&1 || true
+          if ! debugfs -w -R "write /.runcvm/pwd /.runcvm/pwd" "$rootfs_path" >/dev/null 2>&1; then
+             log "  [WARNING] Failed to inject /.runcvm/pwd into cached rootfs"
+          else
+             log "  Injected /.runcvm/pwd"
+          fi
+       fi
+       
+       # ENTRYPOINT (Also inject as /.runcvm/entrypoint just in case, though we did .runcvm-entrypoint earlier?)
+       # Wait, earlier code injected `entrypoint_file` to `/.runcvm-entrypoint` (lines 168-174).
+       # But `runcvm-vm-start` reads `/.runcvm/entrypoint` (line 23).
+       # WE MUST INJECT TO /.runcvm/entrypoint TOO!
+       if [ -f "/.runcvm/entrypoint" ]; then
+          debugfs -w -R "rm /.runcvm/entrypoint" "$rootfs_path" >/dev/null 2>&1 || true
+          if ! debugfs -w -R "write /.runcvm/entrypoint /.runcvm/entrypoint" "$rootfs_path" >/dev/null 2>&1; then
+             log "  [WARNING] Failed to inject /.runcvm/entrypoint into cached rootfs"
+          else
+             log "  Injected /.runcvm/entrypoint"
+          fi
+       fi
     fi
     
     # Expand to full size
@@ -278,11 +342,14 @@ main() {
     
     # Check if /dev/shm has enough space for staging
     local shm_avail=$(busybox df -m /dev/shm 2>/dev/null | busybox awk 'NR==2 {print $4}')
+    [ -z "$shm_avail" ] && shm_avail=0
     local shm_needed=$(( source_size + 50 ))  # Add 50MB buffer
     
     log "/dev/shm available: ${shm_avail}MB, need for staging: ${shm_needed}MB"
     
-    if [ "$shm_avail" -lt "$shm_needed" ]; then
+    if [ "$shm_avail" -eq 0 ]; then
+      log "WARNING: Could not determine /dev/shm space (got 0). Proceeding anyway..."
+    elif [ "$shm_avail" -lt "$shm_needed" ]; then
       log ""
       log "============================================================"
       log "ERROR: /dev/shm too small for staging"
@@ -290,15 +357,17 @@ main() {
       log ""
       log "Container size: ${source_size}MB"
       log "/dev/shm available: ${shm_avail}MB"
+      log "Needed for staging: ${shm_needed}MB"
       log "/dev/shm is sized by the -m (memory) flag"
       log ""
-      log "SOLUTION: Increase VM memory to at least ${shm_needed}m"
-      log ""
-      log "  docker run --runtime=runcvm -m ${shm_needed}m \\"
-      log "    -e RUNCVM_HYPERVISOR=firecracker nginx"
-      log ""
-      log "============================================================"
-      error "Insufficient /dev/shm for staging (need ${shm_needed}MB, have ${shm_avail}MB)"
+       log "SOLUTION: Increase VM memory to at least ${shm_needed}m"
+       log ""
+       log "  docker run --runtime=runcvm -m ${shm_needed}m \\"
+       log "    -e RUNCVM_HYPERVISOR=firecracker nginx"
+       log ""
+       log "============================================================"
+       # Fatal error - exit
+       exit 1
     fi
     
     # Step 1: Copy container files to staging area
@@ -328,12 +397,20 @@ main() {
    # Step 1b: Create init script in staging area
    log "  Creating init script..."
    log " # Export log level to init script"
+   
+   # CRITICAL: Export RUNCVM_LOG_LEVEL so it gets embedded in generated init
+   # The env var from pod must be available when generate_init_script() runs
+   export RUNCVM_LOG_LEVEL="${RUNCVM_LOG_LEVEL:-DEBUG}"
+   
    local init_script="${staging_dir}/init"
    generate_init_script "$init_script"
+
+
+   # K8s uses same generated init as Docker - network from /.runcvm-network-eth0
+  
   
   # Save the original entrypoint if we have it
   if [ -f "$entrypoint_file" ]; then
-    # Ensure directory exists (it should, from step 1b/network tools, but be safe)
     busybox mkdir -p "${staging_dir}/.runcvm"
     busybox cp "$entrypoint_file" "${staging_dir}/.runcvm/entrypoint"
     log "  Saved entrypoint: $(busybox head -1 ${staging_dir}/.runcvm/entrypoint)"
@@ -387,11 +464,12 @@ main() {
     fi
     
     # Copy usr/share (contains terminfo for ncurses programs like watch)
-    if [ -d "$RUNCVM_GUEST/usr/share" ]; then
-      busybox mkdir -p "${staging_dir}/.runcvm/guest/usr"
-      busybox cp -a "$RUNCVM_GUEST/usr/share" "${staging_dir}/.runcvm/guest/usr/"
-      log "    Copied usr/share/ (terminfo)"
-    fi
+    [ -d "$RUNCVM_GUEST/usr/share" ] && busybox mkdir -p "${staging_dir}/.runcvm/guest/usr" && busybox cp -a "$RUNCVM_GUEST/usr/share" "${staging_dir}/.runcvm/guest/usr/" && log "    Copied usr/share/ (terminfo)"
+    
+    # CRITICAL: mount.nfs and other RPC tools need these in /etc
+    busybox mkdir -p "$staging_dir/etc"
+    [ -f "$RUNCVM_GUEST/etc/netconfig" ] && busybox cp -p "$RUNCVM_GUEST/etc/netconfig" "$staging_dir/etc/" && log "    Copied /etc/netconfig"
+    [ -f "$RUNCVM_GUEST/etc/services" ] && busybox cp -p "$RUNCVM_GUEST/etc/services" "$staging_dir/etc/" && log "    Copied /etc/services"
     
     # Copy tmp/dropbear (contains EPKA library for SSH authentication)
     if [ -d "$RUNCVM_GUEST/tmp/dropbear" ]; then
@@ -584,8 +662,23 @@ VMEXECEOF
   # Save network configuration for the VM
   # Save network configuration for all VMs
   # Generate network configuration files
+  # This creates /.runcvm-network-eth0 (FC var format)
   generate_network_configs "$staging_dir"
   
+  # CRITICAL: Copy raw network device files for k8s init script
+  # runcvm-vm-init-k8s expects /.runcvm/network/devices/eth0
+  if [ -d "/.runcvm/network" ]; then
+       log "  Copying network config to rootfs..."
+       busybox mkdir -p "${staging_dir}/.runcvm/network"
+       busybox cp -a "/.runcvm/network/"* "${staging_dir}/.runcvm/network/"
+       log "    Copied /.runcvm/network"
+  fi
+  
+  # CRITICAL: Create /.runcvm/console file
+  # runcvm-vm-init-k8s reads this to set up inittab
+  echo "ttyS0" > "${staging_dir}/.runcvm/console"
+  log "    Created /.runcvm/console (ttyS0)"
+
   # Inject Systemd Service for Entrypoint
   if [ "$RUNCVM_SYSTEMD" = "1" ] || [ "$RUNCVM_SYSTEMD" = "true" ]; then
     log "  Systemd enabled: Injecting runcvm-entrypoint service..."
@@ -740,6 +833,10 @@ DBUNITEOF
   local rootfs_size=$(( staged_size + 150 ))
   [ "$rootfs_size" -lt 64 ] && rootfs_size=64
   
+  # CRITICAL: BRIDGE ALIAS LOGIC REMOVED (transparent L2 bridging used instead)
+  # See docs/kubernetes/networking-debug-summary.md for context.
+  : 
+
   log "Step 2/3: Creating rootfs image..."
   log "  Rootfs size: ${rootfs_size}MB (${staged_size}MB content + overhead)"
   
@@ -751,6 +848,11 @@ DBUNITEOF
     busybox rm -rf "$staging_dir"
     error "Insufficient disk space on overlay (need ${rootfs_size}MB, have ${overlay_avail}MB)"
   fi
+  
+  log "DEBUG: Verifying staging directory ($staging_dir) before rootfs creation:"
+  ls -la "$staging_dir" | while read line; do log "  $line"; done
+  log "DEBUG: Verifying staging /.runcvm content:"
+  ls -la "$staging_dir/.runcvm" | while read line; do log "  $line"; done
   
   # Create rootfs from staging directory
   log "  Source: $staging_dir"  
@@ -775,6 +877,13 @@ DBUNITEOF
   
   local final_size=$(busybox du -sm "$rootfs_path" 2>/dev/null | busybox cut -f1)
   log "  Rootfs ready: ${final_size}MB (created in ${mke2fs_time}s)"
+
+  # if command -v debugfs >/dev/null 2>&1; then
+  #    log "DEBUG: Checking rootfs content using debugfs:"
+  #    debugfs -R "ls -l /" "$rootfs_path" | while read line; do log "  $line"; done
+  #    log "DEBUG: Checking /.runcvm content in rootfs:"
+  #    debugfs -R "ls -l /.runcvm" "$rootfs_path" | while read line; do log "  $line"; done
+  # fi
 
   # CACHE UPDATE (Save SMALL image)
   if [ "$use_cache" = "1" ]; then
@@ -831,6 +940,11 @@ fi # End Cache Miss/No Cache logic
   if [ "$RUNCVM_LOG_LEVEL" != "DEBUG" ]; then
     boot_args="$boot_args quiet loglevel=0 systemd.show_status=false"
   fi
+  
+  # Append container command for init to execute
+  if [ -n "$CMD_ARGS" ]; then
+    boot_args="$boot_args -- $CMD_ARGS"
+  fi
 
   
   # Parse memory size (remove 'M' suffix if present)
@@ -865,11 +979,30 @@ fi # End Cache Miss/No Cache logic
       
       read DOCKER_IF DOCKER_IF_MAC DOCKER_IF_MTU DOCKER_IF_IP DOCKER_IF_IP_NETPREFIX DOCKER_IF_IP_GW < "$device_file"
       
-      # For Firecracker, we need a unique MAC for the guest side.
-      # We modify the container's MAC to start with AA:FC:00 so it's distinct but related.
-      # If we have multiple interfaces, this simple sed might map them to the same MAC if the suffix is identical.
-      # But typically container MACs are unique.
-      local fc_mac=$(echo "$DOCKER_IF_MAC" | busybox sed 's/^..:..:../AA:FC:00/')
+      # MAC ADDRESS SWAPPING (Critical for Cloud/CNI)
+      # We must use the AUTHORIZED MAC ($DOCKER_IF_MAC) inside the Guest.
+      # But we can't have duplicate MACs on the bridge (Host eth0 vs Guest TAP).
+      # SO: We swap them. Host eth0 gets the dummy MAC, Guest gets the Real MAC.
+      
+      local fc_mac="$DOCKER_IF_MAC"
+      local host_dummy_mac=$(echo "$DOCKER_IF_MAC" | busybox sed 's/^..:..:../AA:FC:00/')
+      
+      # If Host eth0 still has the Real MAC, swap it!
+      # We check current MAC.
+      local current_mac=$(cat /sys/class/net/$DOCKER_IF/address)
+      if [ "$current_mac" = "$DOCKER_IF_MAC" ]; then
+         log "  Swapping MACs for $DOCKER_IF to avoid bridge collision..."
+         /.runcvm/guest/sbin/ip link set dev "$DOCKER_IF" down
+         /.runcvm/guest/sbin/ip link set dev "$DOCKER_IF" address "$host_dummy_mac"
+         /.runcvm/guest/sbin/ip link set dev "$DOCKER_IF" up
+      fi
+
+      # ENABLE PROMISCUOUS MODE (Critical for Nested VM / Bridge)
+      # The Bridge (br-eth0) needs to see traffic for the VM's MAC.
+      # Since eth0 is a slave, it should technically be promisc automatically, 
+      # but in some cloud/nested envs, we must force it.
+      log "  Enabling promiscuous mode on $DOCKER_IF..."
+      /.runcvm/guest/sbin/ip link set dev "$DOCKER_IF" promisc on
       
       local tap_name=""
       
@@ -889,18 +1022,32 @@ fi # End Cache Miss/No Cache logic
         
         log "  Network ($DOCKER_IF): $tap_name ($fc_mac) -> $bridge_name"
         
+        # Ensure IP Forwarding is enabled (CRITICAL for routing/NAT)
+        if [ -w /proc/sys/net/ipv4/ip_forward ]; then
+           echo 1 > /proc/sys/net/ipv4/ip_forward
+        else
+           # Try sysctl
+           sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || true
+        fi
+        
         # Create TAP device for Firecracker if it doesn't exist
-        if ! ip link show "$tap_name" >/dev/null 2>&1; then
+
+
+        if ! /.runcvm/guest/sbin/ip link show "$tap_name" >/dev/null 2>&1; then
            log "    Creating TAP device $tap_name..."
-           ip tuntap add dev "$tap_name" mode tap
+           /.runcvm/guest/sbin/ip tuntap add dev "$tap_name" mode tap
         fi
         
         # Add TAP to the bridge
         log "    Adding $tap_name to bridge $bridge_name..."
-        ip link set dev "$tap_name" master "$bridge_name"
+        /.runcvm/guest/sbin/ip link set dev "$tap_name" master "$bridge_name"
+        
+        # Ensure Bridge is UP (Critical if we skipped creation or if down)
+        log "    Ensuring bridge $bridge_name is UP..."
+        /.runcvm/guest/sbin/ip link set dev "$bridge_name" up
         
         # Set MTU and bring up
-        ip link set dev "$tap_name" up mtu "${DOCKER_IF_MTU:-1500}"
+        /.runcvm/guest/sbin/ip link set dev "$tap_name" up mtu "${DOCKER_IF_MTU:-1500}"
         
         # Add IP alias to bridge to allow container-to-VM communication (e.g. docker exec)
         # We pick 172.17.0.254 (or derived from network) to be on the same subnet as VM.
@@ -931,22 +1078,27 @@ fi # End Cache Miss/No Cache logic
         # Implementation:
         net_prefix="${DOCKER_IF_IP_NETPREFIX:-16}"
         
-        # DEPRECATED: alias_ip assignment is removed to avoid interrupting L2 bridging.
-        log "    Skipping bridge alias assignment (Transparent L2 mode enabled)"
+        # Restore Host IP to bridge for NFS and docker exec
+        # We use a static IP that doesn't conflict with any likely pod subnet
+        local host_bridge_ip="169.254.1.254/32"
+        log "    Assigning host IP $host_bridge_ip to $bridge_name for NFS/Exec..."
+        /.runcvm/guest/sbin/ip addr add "$host_bridge_ip" dev "$bridge_name" 2>/dev/null || true
         
+        # SNAT cleanup should still be done if relevant, but the IP deletion is the main point.
+
         # Restore Default Route (lost when flushing IPs)
         # This ensures the container namespace (host side) has internet access via the bridge
-        if [ -n "$DOCKER_IF_IP_GW" ]; then
-            log "    Restoring default route via $DOCKER_IF_IP_GW dev $bridge_name"
-            ip route add default via "$DOCKER_IF_IP_GW" dev "$bridge_name" 2>/dev/null || true
-        fi
+            if [ -n "$DOCKER_IF_IP_GW" ]; then
+                log "    Restoring default route via $DOCKER_IF_IP_GW dev $bridge_name"
+                /.runcvm/guest/sbin/ip route add default via "$DOCKER_IF_IP_GW" dev "$bridge_name" 2>/dev/null || true
+            fi
       
         # Debug: show bridge and tap status
         if [ "$RUNCVM_LOG_LEVEL" = "DEBUG" ]; then
           log "    Bridge status:"
-          ip link show "$bridge_name" 2>&1 | busybox sed 's/^/      /'
+          /.runcvm/guest/sbin/ip link show "$bridge_name" 2>&1 | busybox sed 's/^/      /'
           log "    TAP status:"
-          ip link show "$tap_name" 2>&1 | busybox sed 's/^/      /'
+          /.runcvm/guest/sbin/ip link show "$tap_name" 2>&1 | busybox sed 's/^/      /'
         fi
         
         # Add MASQUERADE rule for outbound traffic from the VM (for the default gateway interface)
@@ -955,60 +1107,31 @@ fi # End Cache Miss/No Cache logic
              log "    Adding NAT MASQUERADE rule for $DOCKER_IF..."
              if [ -n "$RUNCVM_GUEST" ] && [ -d "$RUNCVM_GUEST/usr/lib/xtables" ]; then
                XTABLES_LIBDIR=$RUNCVM_GUEST/usr/lib/xtables xtables-nft-multi iptables \
-                 -t nat -A POSTROUTING -s "$DOCKER_IF_IP" -o "$DOCKER_IF_IP" -j MASQUERADE 2>/dev/null || true
-                 # Note: The original code used -o eth0 (hardcoded). 
-                 # In bridge mode, the traffic leaves via the container's eth0 usually?
-                 # Actually, for the VM, traffic leaves via TAP -> Bridge -> Container Eth0.
-                 # The NAT rule is needed if the *container* needs to NAT VM traffic out to the world.
-                 # Originally: -s "$DOCKER_IF_IP" -o eth0.
-                 # If this is eth0, then -o eth0 is correct (BUT wait, eth0 is now a slave of br-eth0).
-                 # So traffic leaves via br-eth0? No, traffic leaves via the bridge routing?
-                 #
-                 # Wait, in the entrypoint, we moved the Container IP to br-eth0?
-                 # Entrypoint: `ip addr flush dev eth0`, `ip addr add ... dev br-eth0`.
-                 # So the container's "external" interface is now br-eth0.
-                 #
-                 # But we usually want to NAT traffic *leaving* the container infrastructure?
-                 # Actually, usually Docker handles the NAT for the container.
-                 # This rule seems to be for traffic *originating from the VM* (which has FC_IP which is DOCKER_IF_IP).
-                 #
-                 # Wait, the VM uses the SAME IP as the container (`DOCKER_IF_IP`).
-                 # So effectively the VM *is* the container on the network.
-                 # So we don't need NAT for the VM to be seen as the container IP.
-                 #
-                 # The original code:
-                 # iptables -t nat -A POSTROUTING -s "$DOCKER_IF_IP" -o eth0 -j MASQUERADE
-                 # This masquerades traffic FROM the IP (VM/Container IP) going out eth0.
-                 # This looks weird. If source is IP, why masquerade?
-                 # Maybe to fix some routing issue with the bridge?
-                 #
-                 # In multi-nic setup, if we have eth0 and eth1.
-                 # We should probably skip this explicit NAT rule if we are confident the bridge routing works.
-                 # But let's assume valid: if valid, it should likely be:
-                 # -o eth0 (if that's the upstream).
-                 # If we have multiple NICs, which is upstream?
-                 # Usually the default gateway interface. DOCKER_IF_IP_GW tells us.
-                 
-                 # Let's keep it simple: if this interface has a Gateway, we add the rule.
-                 if [ -n "$DOCKER_IF_IP_GW" ] && [ "$DOCKER_IF_IP_GW" != "-" ]; then
-                    # This is likely the default route interface.
-                    # The physical interface is $DOCKER_IF (now enslaved to br-$DOCKER_IF).
-                    # But the *route* probably goes via ... wait.
-                    # If we enslaved eth0 to br-eth0, traffic goes out via br-eth0?
-                    # The bridge *is* the interface with the IP.
-                    
-                    # Let's keep the existing logic but make it dynamic. 
-                    # Use -j MASQUERADE for all traffic from this IP leaving the container?
-                    # Actually, let's just stick to the original "eth0" logic for "eth0" interface only for safety,
-                    # or apply to all?
-                    
-                    # Original code was hardcoded to eth0.
-                    # Currently we iterate. If DOCKER_IF == eth0, we can add it.
-                    true
-                 fi
+                 -t nat -A POSTROUTING -s "$DOCKER_IF_IP" -o "$DOCKER_IF" -j MASQUERADE 2>/dev/null || true
+             else
+               iptables -t nat -A POSTROUTING -s "$DOCKER_IF_IP" -o "$DOCKER_IF" -j MASQUERADE 2>/dev/null || true
              fi
         fi
-      fi
+        # ============================================================
+        # START NFS DAEMON (Inside Container Namespace)
+        # ============================================================
+        if [ -n "$RUNCVM_NFS_HOST_EXPORTS" ] && [ -n "$RUNCVM_CONTAINER_ID" ]; then
+            log "    Starting HOST unfsd for NFS volumes (inside namespace)..."
+            if [ -x "$RUNCVM_GUEST/scripts/runcvm-nfsd" ]; then
+                # We are already in the correct network namespace, so we pass 0 for netns_pid
+                RUNCVM="$RUNCVM_GUEST" "$RUNCVM_GUEST/scripts/runcvm-nfsd" start \
+                    "$RUNCVM_CONTAINER_ID" \
+                    "$RUNCVM_NFS_HOST_EXPORTS" \
+                    "multi" \
+                    "${RUNCVM_NFS_PORT:-1024}" \
+                    "${RUNCVM_NFS_UID:-0}" \
+                    "${RUNCVM_NFS_GID:-0}" \
+                    "0" 2>&1 | busybox sed 's/^/      /'
+            else
+                log "    [WARNING] $RUNCVM_GUEST/scripts/runcvm-nfsd not found, cannot start NFS"
+            fi
+        fi
+        fi
       
       # Build JSON object for this interface
       local iface_json="{\"iface_id\":\"$DOCKER_IF\",\"guest_mac\":\"$fc_mac\",\"host_dev_name\":\"$tap_name\"}"
@@ -1171,6 +1294,8 @@ fi # End Cache Miss/No Cache logic
 
   # Create Firecracker config file
   # Create Firecracker config file
+
+
   generate_firecracker_config \
     "$kernel_path" \
     "$boot_args" \

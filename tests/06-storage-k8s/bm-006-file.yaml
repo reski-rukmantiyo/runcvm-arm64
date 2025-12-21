@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: storage-test-bm-006-file
+spec:
+  runtimeClassName: runcvm
+  containers:
+  - name: alpine
+    image: alpine
+    command: ["sh", "-c", "cat /etc/test-file.txt && sleep 3600"]
+    env:
+    - name: RUNCVM_LOG_LEVEL
+      value: "DEBUG"
+    volumeMounts:
+    - mountPath: /etc/test-file.txt
+      name: file-volume
+  volumes:
+  - name: file-volume
+    hostPath:
+      path: /tmp/storage-test/file-mount.txt
+      type: File

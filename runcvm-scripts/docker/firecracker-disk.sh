@@ -31,7 +31,7 @@ setup_nfs_volumes() {
     log INFO "Setting up NFS volumes from RUNCVM_NFS_VOLUMES env"
     
     # Parse pipe-separated entries
-    echo "$RUNCVM_NFS_VOLUMES" | busybox tr '|' '\n' | while IFS=: read -r src dst port; do
+    echo "$RUNCVM_NFS_VOLUMES" | tr '|' '\n' | while IFS=: read -r src dst port; do
       if [ -z "$src" ]; then continue; fi
       if [ -z "$port" ]; then port="2049"; fi
       

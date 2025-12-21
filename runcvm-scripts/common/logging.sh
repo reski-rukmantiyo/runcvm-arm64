@@ -29,7 +29,8 @@ _log() {
   local severity_level=$(get_log_level_num "$severity")
   
   # Only log if severity meets threshold
-  if [ "$severity_level" -ge "$CURRENT_LOG_LEVEL" ]; then
+  local current_log_level=$(get_log_level_num "${RUNCVM_LOG_LEVEL:-OFF}")
+  if [ "$severity_level" -ge "$current_log_level" ]; then
     
     # Determine timestamp command
     local timestamp=""

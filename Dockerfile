@@ -87,7 +87,9 @@ RUN apk update && \
     ncurses coreutils \
     procps \
     patchelf \
-    unfs3
+    unfs3 \
+    nfs-utils \
+    zstd-libs
 # Note: unfs3+rpcbind added for NFS volume sync
 
 # Install patched dnsmasq
@@ -104,7 +106,7 @@ COPY build-utils/make-bundelf-bundle.sh /usr/local/bin/make-bundelf-bundle.sh
 # Changed from qemu-system-x86_64 to qemu-system-aarch64
 # Note: sshfs removed from binaries - using Rust FUSE binaries instead
 # Note: watch from procps is included for proper Ctrl-C handling (busybox watch doesn't handle it)
-ENV BUNDELF_BINARIES="busybox bash jq ip nc socat mke2fs resize2fs debugfs blkid findmnt dnsmasq xtables-legacy-multi nft xtables-nft-multi nft mount s6-applyuidgid tput coreutils getent dropbear dbclient dropbearkey watch /usr/bin/nsenter /usr/sbin/unfsd /sbin/rpcbind"
+ENV BUNDELF_BINARIES="busybox bash jq ip nc socat mke2fs resize2fs debugfs blkid findmnt dnsmasq xtables-legacy-multi nft xtables-nft-multi nft mount mount.nfs s6-applyuidgid tput coreutils getent dropbear dbclient dropbearkey watch /usr/bin/nsenter /usr/sbin/unfsd /sbin/rpcbind"
 ENV BUNDELF_EXTRA_LIBS="/usr/lib/xtables /usr/libexec/coreutils /tmp/dropbear/libepka_file.so /usr/lib/libtirpc*"
 ENV BUNDELF_EXTRA_SYSTEM_LIB_PATHS="/usr/lib/xtables"
 ENV BUNDELF_CODE_PATH="/opt/runcvm"
@@ -112,9 +114,11 @@ ENV BUNDELF_EXEC_PATH="/.runcvm/guest"
 
 RUN /usr/local/bin/make-bundelf-bundle.sh --bundle && \
     mkdir -p $BUNDELF_CODE_PATH/bin && \
+    ls -l $BUNDELF_CODE_PATH/bin/busybox && \
+    ldd $BUNDELF_CODE_PATH/bin/busybox && \
     cd $BUNDELF_CODE_PATH/bin && \
     for cmd in \
-    uname mkdir rmdir cp mv free ip awk sleep base64 cat chgrp chmod cut grep head hostname init ln ls \
+    uname mkdir rmdir cp mv free awk sleep base64 cat chgrp chmod cut grep head hostname init ln ls \
     mkdir poweroff ps rm rmdir route sh sysctl tr touch ipcalc; \
     do \
     ln -s busybox $cmd; \
@@ -129,8 +133,8 @@ RUN /usr/local/bin/make-bundelf-bundle.sh --bundle && \
     for lib in $(ldd /usr/sbin/unfsd 2>/dev/null | grep "=>" | awk '{print $3}' | grep -v "^$"); do \
     cp -n "$lib" $BUNDELF_CODE_PATH/lib/ 2>/dev/null || true; \
     done && \
-    # Also copy transitive dependencies for the libs we just copied
-    for lib in $BUNDELF_CODE_PATH/lib/libtirpc*; do \
+    # Also copy transitive dependencies for ALL libs we just copied
+    for lib in $BUNDELF_CODE_PATH/lib/*; do \
     for dep in $(ldd "$lib" 2>/dev/null | grep "=>" | awk '{print $3}' | grep -v "^$"); do \
     cp -n "$dep" $BUNDELF_CODE_PATH/lib/ 2>/dev/null || true; \
     done; \
@@ -378,7 +382,7 @@ COPY --from=firecracker-kernel-build /build/linux/.config.bak /opt/runcvm/kernel
 RUN apk update && apk add --no-cache rsync unfs3 e2fsprogs-extra
 
 ARG RUNCVM_SCRIPTS_CACHEBUST
-RUN echo "Cache bust: $RUNCVM_SCRIPTS_CACHEBUST"
+RUN echo "Cache bust: 1766168000"
 ADD runcvm-scripts /opt/runcvm/scripts/
 
 ADD build-utils/entrypoint-install.sh /

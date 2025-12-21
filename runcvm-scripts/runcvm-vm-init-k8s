@@ -1,0 +1,305 @@
+#!/bin/sh
+# set -x
+
+# CRITICAL DEBUG: Prove this script is being called
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mkdir -p /dev/pts
+mount -t devpts devpts /dev/pts
+echo "========================================" > /dev/console
+echo "K8S VM-INIT STARTING NOW!" > /dev/console
+echo "========================================" > /dev/console
+
+# Boot timing profiler
+_T() { 
+  local t=$(cat /proc/uptime | cut -d' ' -f1)
+  echo "$t $1" >> /.runcvm/timing.log
+}
+_T "vm-init-start"
+
+# Load original environment
+# Sanitize config to be POSIX compliant (replace bash 'declare -x' with 'export')
+sed -i 's/^declare -x/export/g' /.runcvm/config 2>/dev/null || true
+. /.runcvm/config
+_T "config-loaded"
+
+# Load defaults and aliases
+. $RUNCVM_GUEST/scripts/runcvm-ctr-defaults
+_T "defaults-loaded"
+
+# Bring up local interface IMMEDIATELY
+ip link set lo up
+_T "lo up"
+
+# Load port from config or default
+SSHD_PORT="${SSHD_PORT:-22222}"
+
+# === EARLY VSOCK LISTENER START ===
+# Start VSOCK backdoor immediately to allow debugging even if init fails later
+(
+  export PATH="/.runcvm/guest/bin:/.runcvm/guest/usr/bin:$PATH"
+  echo "[GUEST-INIT] Starting EARLY VSOCK listener on port 22..." > /dev/console
+  
+  SOCAT=""
+  # Prioritize STATIC socat to avoid library dependency issues in foreign images
+  if [ -x "/.runcvm/guest/bin/socat-static" ]; then SOCAT="/.runcvm/guest/bin/socat-static"
+  elif command -v socat >/dev/null 2>&1; then SOCAT=socat
+  elif [ -x "/.runcvm/guest/bin/socat" ]; then SOCAT="/.runcvm/guest/bin/socat"
+  elif [ -x "/.runcvm/guest/usr/bin/socat" ]; then SOCAT="/.runcvm/guest/usr/bin/socat"
+  fi
+
+  if [ -n "$SOCAT" ]; then
+     # Wait for dropbear (optional, socat will retry or we can loop)
+     # Retry added to allow Dropbear time to start up.
+     $SOCAT VSOCK-LISTEN:22,fork TCP:127.0.0.1:22222,retry=20,interval=0.5 >> /dev/console 2>&1 &
+     echo "[GUEST-INIT] EARLY VSOCK listener started (PID $!)" > /dev/console
+  else
+     echo "[GUEST-INIT] WARNING: socat not found for EARLY VSOCK" > /dev/console
+  fi
+) &
+# ==================================
+
+# === DROPBEAR SSH (Started Early for VSOCK Access) ===
+_T "starting dropbear"
+if [ ! -f /.runcvm/dropbear/key ]; then
+  # Create dropbear RSA public/private key pair
+  KEY_PUBLIC=$(dropbearkey -t ed25519 -f /.runcvm/dropbear/key 2>/dev/null | grep ^ssh | cut -d' ' -f2)
+  # Create json for dropbear EPKA module
+  printf '[\n    {\n        "user": "root",\n        "keytype": "ssh-ed25519",\n        "key": "%s",\n        "options":"no-X11-forwarding",\n        "comments": ""\n    }\n]\n' "$KEY_PUBLIC" > /.runcvm/dropbear/epka.json
+  chmod 400 /.runcvm/dropbear/epka.json
+fi
+
+echo "[GUEST-INIT] Starting dropbear on port $SSHD_PORT..." > /dev/console
+$RUNCVM_GUEST/usr/sbin/dropbear -REF -p $SSHD_PORT -A $RUNCVM_GUEST/tmp/dropbear/libepka_file.so,/.runcvm/dropbear/epka.json -P /.runcvm/dropbear/dropbear.pid >/dev/console 2>&1 &
+echo "[GUEST-INIT] Dropbear started (PID: $!)" > /dev/console
+
+# ====================================================
+
+# Alpine initrd doesn't honour command-line rw flag
+mount -o remount,rw /
+_T "mount remount"
+
+# FIXME: Something is making /.runcvm ro, so remount it rw
+# until such time as exit code handling and dropbear key creation
+# obviate the need for this.
+# mount -o remount,rw /.runcvm || true
+_T "mount runc-vm"
+
+# Alpine initrd doesn't configure /dev device permissions and ownership
+# to support non-root users.
+if [ "$(findmnt -rnu -o FSTYPE /dev)" = "devtmpfs" ]; then
+  [ -e /dev/stdin ] || ln -snf /proc/self/fd/0 /dev/stdin
+  [ -e /dev/stdout ] || ln -snf /proc/self/fd/1 /dev/stdout
+  [ -e /dev/stderr ] || ln -snf /proc/self/fd/2 /dev/stderr
+  [ -e /proc/kcore ] && ln -snf /proc/kcore /dev/core
+  [ -h /dev/ptmx ] || ln -snf pts/ptmx /dev/ptmx
+  chmod 666 /dev/null /dev/random /dev/urandom /dev/zero /dev/tty /dev/pts/ptmx
+  chmod 620 /dev/tty[0-9]*
+  chgrp tty /dev/tty*
+fi
+_T "after /dev"
+
+# Unmount /run if it is a tmpfs (not a virtiofs) mounted by the initramfs
+# /run may be populated in the underlying image, and may also be a volume or be bind-mounted,
+# and its contents should be accessible in these cases.
+if [ "$(findmnt -rnu -o FSTYPE /run)" = "tmpfs" ]; then
+  busybox umount -fl /run
+fi
+_T "after tmpfs"
+
+# FIXME: virtiofs mounts aren't always made rw. Remount them all rw (if allowed)
+# $RUNCVM_GUEST/bin/mount -t virtiofs | awk '{print $3}' | xargs -n 1 mount -o remount,rw
+
+# Some systems do not set up /dev/fd. If needed, add it.
+if ! [ -h /dev/fd ]; then
+  ln -s /proc/self/fd /dev/fd
+fi
+_T "after /dev/fd"
+
+# FIXME: This must be run early enough, otherwise other interfaces like docker0 might have started
+IF=$(ls /sys/class/net/ | grep -vE '^(lo|docker)' | head -n 1)
+
+# https://bugzilla.redhat.com/show_bug.cgi?id=501934
+for i in all $IF
+do
+  # /sbin/sysctl -q -w -e net.ipv6.conf.$i.disable_ipv6=1 net.ipv6.conf.$i.autoconf=0 net.ipv6.conf.$i.accept_ra=0
+  sysctl -q -w -e net.ipv6.conf.$i.disable_ipv6=1 net.ipv6.conf.$i.autoconf=0 || true
+done
+_T "after network setup"
+
+# =================================================================
+# CONFIGURE ETHERNET (eth0)
+# =================================================================
+# Check if we have network config injected
+if [ -d "/.runcvm/network/devices" ]; then
+  echo "[GUEST-INIT] Configuring network interfaces..." > /dev/console
+  
+  # Try to load 'eth0' or 'default'
+  NET_DEV="eth0"
+  [ ! -f "/.runcvm/network/devices/$NET_DEV" ] && NET_DEV="default"
+  
+  if load_network "$NET_DEV"; then
+     echo "[GUEST-INIT] Configuring $DOCKER_IF ($DOCKER_IF_IP/$DOCKER_IF_IP_NETPREFIX)..." > /dev/console
+     
+     # Bring interface UP
+     ip link set dev eth0 up mtu "${DOCKER_IF_MTU:-1500}"
+     
+     # Add Address
+     if [ -n "$DOCKER_IF_IP" ]; then
+        # Flush first to clean slate (removes checking for duplicates manually)
+        ip addr flush dev eth0
+        ip route flush dev eth0
+        ip addr add "${DOCKER_IF_IP}/${DOCKER_IF_IP_NETPREFIX}" dev eth0
+     fi
+     
+     # Add Gateway
+     if [ -n "$DOCKER_IF_IP_GW" ]; then
+        # Use 'onlink' to force the route even if the gateway isn't in the subnet (e.g. /32)
+        ip route add default via "$DOCKER_IF_IP_GW" dev eth0 onlink
+     fi
+     
+     _T "eth0 configured"
+  else
+     echo "[GUEST-INIT] WARNING: Failed to load network config for $NET_DEV" > /dev/console
+  fi
+else
+  echo "[GUEST-INIT] WARNING: No network configuration found in /.runcvm/network" > /dev/console
+fi
+# =================================================================
+
+# Bring up local interface
+ip link set lo up
+_T "after network up"
+
+# KUBERNETES VM NETWORKING (Removed duplicate block)
+# Network is already configured in "CONFIGURE ETHERNET (eth0)" block above.
+# The code below was causing "Address already assigned" errors.
+
+# No complex route files needed - default GW handles it
+
+
+# TODO
+# - bind-mount or overwrite /etc/resolv.conf, /etc/hosts and /etc/hostname?
+
+# Setup hostname
+hostname -F /etc/hostname
+_T "after hostname"
+
+# Mount filesystems defined in /etc/fstab OR as defined in RUNCVM_DISKS
+if [ -f /.runcvm/fstab ]; then
+  busybox modprobe ext4
+  mount -a --fstab /.runcvm/fstab -o X-mount.mkdir
+
+  # Now mount our fstab over /etc/fstab
+  mount --bind /.runcvm/fstab /etc/fstab
+fi
+_T "after disk fstabb"
+
+# Load cgroupfs (if needed/requested):
+# - If entrypoint is systemd-like () then call cgroupfs_mount "${RUNCVM_CGROUPFS:-none}"
+# - Else call cgroupfs_mount "${RUNCVM_CGROUPFS:-hybrid}"
+
+# Load cgroupfs functions first.
+. $RUNCVM_GUEST/scripts/functions/cgroupfs
+_T "after cgrop"
+
+# Load original entrypoint
+# Load original entrypoint (First line only for systemd check)
+if [ -f /.runcvm/entrypoint ]; then
+  read -r ARGS_INIT < /.runcvm/entrypoint
+else
+  ARGS_INIT=""
+fi
+_T "after entrypoint"
+
+# Check if ARGS_INIT is a symlink and follow it if it is
+if [ -L "$ARGS_INIT" ] && [ -n "$ARGS_INIT" ]; then
+    ARGS_INIT=$(readlink -f "$ARGS_INIT")
+fi
+
+case "$ARGS_INIT" in
+  */systemd) cgroupfs_mount "${RUNCVM_CGROUPFS:-none}" ;;
+  *) cgroupfs_mount "${RUNCVM_CGROUPFS:-hybrid}" ;;
+esac
+_T "after systemd"
+
+# Make directory for dropbear host keys and public/private keypair
+mkdir -p /.runcvm/dropbear
+
+# Only generate if not pre-generated
+if [ ! -f /.runcvm/dropbear/key ]; then
+  # Create dropbear RSA public/private key pair
+  KEY_PUBLIC=$(dropbearkey -t ed25519 -f /.runcvm/dropbear/key 2>/dev/null | grep ^ssh | cut -d' ' -f2)
+
+  # Create json for dropbear EPKA module
+  cat <<_EOE_ >/.runcvm/dropbear/epka.json && chmod 400 /.runcvm/dropbear/epka.json
+[
+    {
+        "user": "root",
+        "keytype": "ssh-ed25519",
+        "key": "$KEY_PUBLIC",
+        "options":"no-X11-forwarding",
+        "comments": ""
+    }
+]
+_EOE_
+fi
+_T "after key ssh"
+
+# Load choice of console device
+read -r CONSOLE_DEVICE </.runcvm/console || CONSOLE_DEVICE="ttyS0"
+if [ -z "$CONSOLE_DEVICE" ]; then CONSOLE_DEVICE="ttyS0"; fi
+_T "after console"
+
+# Rename /.dockerenv, because presence of this file leads to systemd-detect-virt detecting presence of a container,
+# which in-turn prevents loading certain units (like systemd-modules-load.service), that
+# specify 'ConditionVirtualization=!container'
+[ -f "/.dockerenv" ] && mv /.dockerenv /.dockerenv.runcvm
+_T "after docker env"
+
+if [ "$RUNCVM_INIT" = "1" ]; then
+  # If launched with '--init' (or --env=RUNCVM_INIT=1) then run our own init in place of Docker's/Podman's.
+
+  cat >/etc/inittab <<_EOE_
+$CONSOLE_DEVICE::respawn:-$RUNCVM_GUEST/scripts/runcvm-vm-start-wrapper
+null::respawn:$RUNCVM_GUEST/scripts/runcvm-vm-qemu-ga
+null::respawn:$RUNCVM_GUEST/usr/sbin/dropbear -REF -p $SSHD_PORT -A $RUNCVM_GUEST/tmp/dropbear/libepka_file.so,/.runcvm/dropbear/epka.json -P /.runcvm/dropbear/dropbear.pid
+null::ctrlaltdel:$RUNCVM_GUEST/bin/poweroff
+null::restart:$RUNCVM_GUEST/bin/poweroff
+null::shutdown:$RUNCVM_GUEST/bin/poweroff
+_EOE_
+
+  # Allow runcvm-vm-start to run once (and only once)
+  rm -f /.runcvm/once
+
+  # Clear the environment, and run our own init, disconnecting stdout and stderr from terminal
+  exec $RUNCVM_GUEST/bin/init >/dev/null 2>&1
+else
+  # If not, assume the user knows what they're doing: launch qemu-ga and just run their entrypoint.
+
+  # Cache paths before cleaning environment (which unsets RUNCVM_GUEST)
+  INIT_BINARY="$RUNCVM_GUEST/sbin/runcvm-init"
+  START_SCRIPT="$RUNCVM_GUEST/scripts/runcvm-vm-start"
+
+  # Clean RUNCVM env vars
+  clean_env
+
+  # Run the qemu guest agent, needed to support future functionality
+  $RUNCVM/scripts/runcvm-vm-qemu-ga >/dev/null 2>&1 &
+
+  echo "[GUEST-INIT] Dropbear should be already running." > /dev/console
+
+
+
+  # Run init from the image
+  # Pipe input/output from/to console device
+  exec >/dev/$CONSOLE_DEVICE 2>&1
+  
+  # Invoke runcvm-init with --no-fork purely to create controlling tty,
+  # then exec runcvm-vm-start
+  exec "$INIT_BINARY" --no-fork "$START_SCRIPT"
+fi  
+  # echo "[GUEST-INIT] SLEEPING INFINITY FOR DEBUG..." > /dev/console
+  # exec sleep infinity
+fi
+_T "after init"

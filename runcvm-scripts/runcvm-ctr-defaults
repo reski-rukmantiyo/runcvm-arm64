@@ -15,27 +15,44 @@ SSHD_PORT=22222
 RUNCVM_LOG_LEVEL="${RUNCVM_LOG_LEVEL:-OFF}"
 
 # Log severity levels (numeric for comparison)
-declare -A LOG_LEVELS=(
-  [DEBUG]=0
-  [INFO]=1
-  [LOG]=1      # Alias for INFO
-  [ERROR]=2
-  [OFF]=999
-)
-
-# Get numeric level for current log level (default to OFF=999)
-CURRENT_LOG_LEVEL="${LOG_LEVELS[$RUNCVM_LOG_LEVEL]:-999}"
+# Log severity levels (numeric for comparison)
+# Replaced associative array with POSIX sh case statement
+case "$RUNCVM_LOG_LEVEL" in
+  DEBUG) CURRENT_LOG_LEVEL=0 ;;
+  INFO|LOG) CURRENT_LOG_LEVEL=1 ;;
+  ERROR) CURRENT_LOG_LEVEL=2 ;;
+  OFF|*) CURRENT_LOG_LEVEL=999 ;;
+esac
 
 # Core logging function
 _log() {
   local severity="$1"
   shift
   local message="$*"
-  local severity_level="${LOG_LEVELS[$severity]:-1}"
+  local severity_level=999
+  
+  case "$severity" in
+    DEBUG) severity_level=0 ;;
+    INFO|LOG) severity_level=1 ;;
+    ERROR) severity_level=2 ;;
+  esac
   
   # Only log if severity meets threshold
   if [ "$severity_level" -ge "$CURRENT_LOG_LEVEL" ]; then
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [RunCVM] [$severity] $message" >&2
+    local log_entry="[$(date '+%Y-%m-%d %H:%M:%S')] [RunCVM] [$severity] $message"
+    
+    # Check if we should log to file
+    if [ -n "$RUNCVM_LOG_FILE" ] && [ "$RUNCVM_LOG_FILE" != "/dev/stderr" ]; then
+       echo "$log_entry" >> "$RUNCVM_LOG_FILE" 2>/dev/null || true
+    fi
+    
+    # Output to stderr if:
+    # 1. It is an ERROR
+    # 2. RUNCVM_LOG_FILE is NOT set
+    # 3. RUNCVM_LOG_STDERR=1 is set
+    if [ "$severity" = "ERROR" ] || [ -z "$RUNCVM_LOG_FILE" ] || [ "${RUNCVM_LOG_STDERR:-0}" = "1" ]; then
+       echo "$log_entry" >&2
+    fi
   fi
 }
 
@@ -64,7 +81,7 @@ error() {
 
 
 clean_env() {
-  export -n \
+  unset \
   RUNCVM_BREAK RUNCVM_INIT \
   RUNCVM_GUEST \
   RUNCVM_RUNTIME_DEBUG \
@@ -79,7 +96,7 @@ clean_env() {
   RUNCVM_CGROUPFS
 
   # May be set in VM by busybox init process
-  export -n USER
+  unset USER
 }
 
 load_network() {
@@ -91,8 +108,16 @@ load_network() {
 
 which() {
   local cmd="$1"
-  local WHICH_PATH="${RUNCVM_PATH//:/ }" # Replace ':' with ' '
-  for p in $WHICH_PATH; do [ -x "$p/$cmd" ] && echo "$p/$cmd" && return 0; done
+  local old_ifs="$IFS"
+  IFS=':'
+  set -- $RUNCVM_PATH
+  IFS="$old_ifs"
+  for p do
+    if [ -x "$p/$cmd" ]; then
+      echo "$p/$cmd"
+      return 0
+    fi
+  done
   return 1
 }
 
@@ -100,16 +125,17 @@ create_aliases() {
   for cmd in \
       bash \
       busybox awk cat chgrp chmod cut grep head hostname init ln ls mkdir mountpoint poweroff ps rm rmdir sh sysctl touch tr \
-      ip jq \
+      jq \
       dnsmasq \
       blkid findmnt getent mke2fs resize2fs mount nc ping socat \
-      xtables-nft-multi xtables-legacy-multi \
       dbclient dropbear dropbearkey \
-      s6-applyuidgid \
       tput \
       debugfs
   do
-    eval "$cmd() { $(which $cmd) \"\$@\"; }"
+    local cmd_path
+    if cmd_path=$(which "$cmd"); then
+      eval "$cmd() { $cmd_path \"\$@\"; }"
+    fi
   done
 }
 

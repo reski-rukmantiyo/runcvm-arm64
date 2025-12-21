@@ -1,8 +1,5 @@
 #!/opt/runcvm/lib/ld-musl-aarch64.so.1 /opt/runcvm/bin/bash
 
-# DIAGNOSTIC: Dump environment to check for RUNCVM_LOG_LEVEL leakage
-env | grep RUNCVM > /tmp/runcvm-env-leak.log || true
-
 # REFERENCES
 
 # Virtiofs
@@ -46,10 +43,15 @@ RUNCVM_CONTAINER_MEM_OVERHEAD="256" # Memory (Mb) overhead to allow for Firecrac
 
 # Configure Logger for Runtime
 RUNCVM_COMPONENT_NAME="RunCVM-Runtime"
-RUNCVM_LOG_FILE="/opt/runcvm/runtime.log"
+RUNCVM_LOG_FILE="/var/log/runcvm.debug"
+export RUNCVM_LOG_LEVEL="${RUNCVM_LOG_LEVEL:-DEBUG}"
 
 # Source logging functions
 . "$RUNCVM/scripts/common/logging.sh"
+
+log_info "=========================================="
+log_info "RunCVM Runtime invoked at $(date)"
+log_info "ARGS: $*"
 
 
 # ============================================================
@@ -140,8 +142,11 @@ log_debug "Command line: $0 ${COMMAND_LINE[@]@Q}"
 
 while true
 do
+  :
+  if [ "$1" = "--systemd-cgroup" ]; then shift; continue; fi
   case "$1" in
-    --debug|--systemd-cgroup) shift; continue; ;;
+    --debug) shift; continue; ;;
+    --systemd-cgroup) shift; continue; ;;
     --log|--log-format|--root|--criu|--rootless) shift; shift; continue; ;;
     --log=*|--log-format=*|--root=*|--criu=*|--rootless=*) shift; continue; ;;
     *) break; ;;
@@ -212,8 +217,29 @@ if [ "$COMMAND" = "create" ]; then
   fi
   # ============================================================
   
+  # ============================================================
+  # KUBERNETES WORKLOAD DETECTION
+  # Check if this is a Kubernetes workload (not sandbox)
+  # ============================================================
+  IS_K8S=0
+  if [ -n "$(get_config_env KUBERNETES_SERVICE_HOST)" ]; then
+     IS_K8S=1
+     log "Kubernetes workload detected (KUBERNETES_SERVICE_HOST)"
+  elif jq_get "$CFG" '.annotations["io.kubernetes.cri.container-type"]' 2>/dev/null | grep -q "container"; then
+     IS_K8S=1
+     log "Kubernetes workload detected (CRI annotation)"
+  fi
+  
+  if [ "$IS_K8S" = "1" ]; then
+     RUNCVM_ENTRYPOINT="$RUNCVM_GUEST/scripts/runcvm-ctr-entrypoint-k8s"
+     export RUNCVM_NETWORK_MODE="kubernetes" 
+     # We export this so it might be picked up, but better to set in config env later
+     set_config_env "RUNCVM_NETWORK_MODE" "kubernetes"
+  fi
+
   # Pending support for user-specified mountpoint for the guest (VM) binaries and scripts
   set_config_env "RUNCVM_GUEST" "$RUNCVM_GUEST"
+  set_config_env "RUNCVM_LOG_FILE" "/tmp/runcvm.debug"
 
   ARG0=$(jq_get "$CFG" '.process.args[0]')
   # Now look in mounts for destination == $ARG0 (this works for Docker and Podman)
@@ -399,41 +425,41 @@ if [ "$COMMAND" = "create" ]; then
     
     # Build NFS volumes string for environment variable
     NFS_VOLUMES=""
+    NFS_HOST_EXPORT_LIST=""
     
-    # Use process substitution to avoid subshell (so NFS_PORT persists)
+    # First pass: Aggregate all valid bind mounts for NFS
     while IFS=: read -r src dst; do
       [ -z "$src" ] && continue
       [ -z "$dst" ] && continue
       case "$dst" in
         /etc/resolv.conf|/etc/hosts|/etc/hostname) continue ;;
+        /dev/shm|/dev/termination-log|/var/run/secrets/*) continue ;;
       esac
       case "$src" in
-        */.runcvm*) continue ;;
+        */.runcvm*|*/shm|*/kube-api-access*) continue ;;
       esac
+      
       if [ -e "$src" ]; then
+        # Check for duplicates in the current list
+        if echo "$NFS_VOLUMES" | grep -q "${src}:${dst}"; then
+          continue
+        fi
+
         log "FIRECRACKER:   Volume: $src -> $dst"
         [ "$RUNCVM_LOG_LEVEL" = "DEBUG" ] && echo "[DEBUG] FIRECRACKER: Volume: $src -> $dst (port $NFS_PORT)" >&2
-        [ "$RUNCVM_LOG_LEVEL" = "DEBUG" ] && echo "[DEBUG] FIRECRACKER: Volume: $src -> $dst (port $NFS_PORT)" >&2
         
-        # Build env var (pipe-separated for multiple volumes)
+        # Build paths for unfsd (inside container)
+        # Note: $dst here is the path relative to the VM root, e.g. /test-mount
+        # Inside the container, these are at $RUNCVM_VM_MOUNTPOINT/$dst
+        container_path="${RUNCVM_VM_MOUNTPOINT}${dst}"
+
+        # Build env var for guest (pipe-separated)
         if [ -n "$NFS_VOLUMES" ]; then
-          NFS_VOLUMES="${NFS_VOLUMES}|${src}:${dst}:${NFS_PORT}"
+          NFS_VOLUMES="${NFS_VOLUMES}|${container_path}:${dst}:${NFS_PORT}"
+          NFS_HOST_EXPORT_LIST="${NFS_HOST_EXPORT_LIST} ${container_path}"
         else
-          NFS_VOLUMES="${src}:${dst}:${NFS_PORT}"
-        fi
-        
-        # Start NFS daemon on HOST for this volume
-        if [ -x /opt/runcvm/scripts/runcvm-nfsd ]; then
-          log "FIRECRACKER: Starting HOST unfsd for $src (port $NFS_PORT)..."
-          [ "$RUNCVM_LOG_LEVEL" = "DEBUG" ] && echo "[DEBUG] Starting unfsd: $src port=$NFS_PORT uid=$CONTAINER_UID" >&2
-          
-          # Export RUNCVM_LOG_LEVEL so runcvm-nfsd can use it
-          export RUNCVM_LOG_LEVEL
-          /opt/runcvm/scripts/runcvm-nfsd start "$ID" "$src" "$dst" "$NFS_PORT" "$CONTAINER_UID" "$CONTAINER_GID" 2>&1
-          NFS_PORT=$((NFS_PORT + 2))
-        else
-          log "WARNING: runcvm-nfsd not found at /opt/runcvm/scripts/runcvm-nfsd"
-          [ "$RUNCVM_LOG_LEVEL" = "DEBUG" ] && echo "[DEBUG] ERROR: runcvm-nfsd not found!" >&2
+          NFS_VOLUMES="${container_path}:${dst}:${NFS_PORT}"
+          NFS_HOST_EXPORT_LIST="${container_path}"
         fi
       fi
     done < <(jq -r --arg vm "$RUNCVM_VM_MOUNTPOINT" '
@@ -442,8 +468,29 @@ if [ "$COMMAND" = "create" ]; then
       select(.destination | startswith($vm + "/")) |
       "\(.source):\(.destination | ltrimstr($vm))"
     ' "$CFG" 2>/dev/null)
-    
-    # Pass NFS volumes via environment variable (bypasses file path issues)
+
+    # DEBUG: Log namespaces section to help troubleshoot extraction
+    if [ "$RUNCVM_LOG_LEVEL" = "DEBUG" ]; then
+      log "FIRECRACKER: OCI Namespaces: $(jq_get "$CFG" '.linux.namespaces')"
+    fi
+
+    # Pass NFS configuration to container via environment variables
+    # We will start unfsd from within the container context (on the host side of the VM setup)
+    # to ensure it is in the correct network namespace and can bind to the bridge IP.
+    if [ -n "$NFS_HOST_EXPORT_LIST" ]; then
+      log "FIRECRACKER: Preparing NFS configuration for container..."
+      set_config_env "RUNCVM_NFS_HOST_EXPORTS" "$NFS_HOST_EXPORT_LIST"
+      set_config_env "RUNCVM_NFS_PORT" "$NFS_PORT"
+      set_config_env "RUNCVM_NFS_UID" "$CONTAINER_UID"
+      set_config_env "RUNCVM_NFS_GID" "$CONTAINER_GID"
+      set_config_env "RUNCVM_CONTAINER_ID" "$ID"
+      
+      # We still need to increment NFS_PORT for internal accounting if we had multiple daemons,
+      # but here we use a single one per container.
+      NFS_PORT=$((NFS_PORT + 2))
+    fi
+
+    # Pass NFS volumes via environment variable for the guest VM
     if [ -n "$NFS_VOLUMES" ]; then
       log "FIRECRACKER: Setting RUNCVM_NFS_VOLUMES=$NFS_VOLUMES"
       [ "$RUNCVM_LOG_LEVEL" = "DEBUG" ] && echo "[DEBUG] FIRECRACKER: Setting RUNCVM_NFS_VOLUMES=$NFS_VOLUMES" >&2
@@ -557,6 +604,11 @@ if [ "$COMMAND" = "create" ]; then
   alpine|openwrt) RUNCVM_KERNEL_OS_KERNEL_PATH="/boot/vmlinuz-virt"
                   RUNCVM_KERNEL_OS_INITRAMFS_PATH="/boot/initramfs-virt"
                   RUNCVM_KERNEL_ROOT="rootfstype=virtiofs root=runcvmfs resume="
+                  ;;
+          firecracker)
+                  RUNCVM_KERNEL_OS_KERNEL_PATH=""
+                  RUNCVM_KERNEL_OS_INITRAMFS_PATH=""
+                  RUNCVM_KERNEL_ROOT="rootfstype=virtiofs root=runcvmfs rw"
                   ;;
 
            *) error "Unrecognised image O/S '$RUNCVM_KERNEL'; specify --env=RUNCVM_KERNEL=<dist> or --env=RUNCVM_KERNEL=<dist>/<version>"; ;;

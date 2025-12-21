@@ -157,7 +157,13 @@ if [ -L "$ARGS_INIT" ]; then
     ARGS_INIT=$(readlink -f "$ARGS_INIT")
 fi
 
-if [[ "$ARGS_INIT" =~ /systemd$ ]]; then
+# Check if init is systemd
+case "$ARGS_INIT" in
+  */systemd) ;;
+  *) ;;
+esac
+
+# if [[ "$ARGS_INIT" =~ /systemd$ ]]; then ...
   cgroupfs_mount "${RUNCVM_CGROUPFS:-none}"
 else
   cgroupfs_mount "${RUNCVM_CGROUPFS:-hybrid}"
@@ -225,6 +231,21 @@ else
 
   # Run dropbear SSH server, needed to support 'docker exec'
   dropbear -REF -p $SSHD_PORT -A $RUNCVM_GUEST/tmp/dropbear/libepka_file.so,/.runcvm/dropbear/epka.json -P /.runcvm/dropbear/dropbear.pid &>/dev/null &
+
+  # VSOCK LISTENER FOR EXEC
+  # Forward VSOCK Port 22 -> Local Port 22222 (SSH)
+  if command -v socat >/dev/null 2>&1; then
+      socat VSOCK-LISTEN:22,fork TCP:127.0.0.1:$SSHD_PORT &>/dev/null &
+  else
+      # Check common locations if not in PATH
+      if [ -x "$RUNCVM_GUEST/bin/socat" ]; then
+         "$RUNCVM_GUEST/bin/socat" VSOCK-LISTEN:22,fork TCP:127.0.0.1:$SSHD_PORT &>/dev/null &
+      elif [ -x "$RUNCVM_GUEST/usr/bin/socat" ]; then
+         "$RUNCVM_GUEST/usr/bin/socat" VSOCK-LISTEN:22,fork TCP:127.0.0.1:$SSHD_PORT &>/dev/null &
+      else
+         echo "Warning: socat not found, VSOCK exec will not work" > /dev/console
+      fi
+  fi
 
   # Run init from the image
   # Pipe input/output from/to console device

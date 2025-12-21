@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: storage-test-bm-003-ro
+spec:
+  runtimeClassName: runcvm
+  containers:
+  - name: alpine
+    image: alpine
+    command: ["sh", "-c", "echo 'failed-write' > /data/readonly.txt || echo 'WRITE_FAILED_SUCCESSFULLY' && sleep 3600"]
+    env:
+    - name: RUNCVM_LOG_LEVEL
+      value: "DEBUG"
+    volumeMounts:
+    - mountPath: /data
+      name: host-volume
+      readOnly: true
+  volumes:
+  - name: host-volume
+    hostPath:
+      path: /tmp/storage-test/bm003

@@ -1,10 +1,21 @@
-#!/.runcvm/guest/bin/bash
+#!/bin/sh
+
+echo "[VM-START] Script started (PID $$)" > /dev/console
 
 # Load original environment
-. /.runcvm/config
+if [ -f /.runcvm/config ]; then
+  . /.runcvm/config
+fi
 
 # Load defaults and aliases
-. $RUNCVM_GUEST/scripts/runcvm-ctr-defaults
+# Check if defaults exists first
+if [ -f "$RUNCVM_GUEST/scripts/runcvm-ctr-defaults" ]; then
+    . $RUNCVM_GUEST/scripts/runcvm-ctr-defaults
+else
+    echo "[VM-START] WARNING: runcvm-ctr-defaults not found!" > /dev/console
+fi
+
+echo "[VM-START] Defaults loaded" > /dev/console
 
 if [ -f /.runcvm/once ]; then
   poweroff
@@ -14,16 +25,57 @@ else
 fi
 
 # Change to saved PWD
-cd $(cat /.runcvm/pwd) && unset OLDPWD
+if [ -f /.runcvm/pwd ]; then
+  cd $(cat /.runcvm/pwd) && unset OLDPWD
+else
+  cd /
+fi
 
-# Reload original environment
-. /.runcvm/config
+echo "[VM-START] PWD set" > /dev/console
 
-# Load original entrypoint
-mapfile -t ARGS </.runcvm/entrypoint
+# Reload original environment again to be sure
+if [ -f /.runcvm/config ]; then
+  . /.runcvm/config
+fi
+
+# Cache paths before cleaning
+S6_BINARY="$RUNCVM_GUEST/bin/s6-applyuidgid"
 
 # Clean RUNCVM env vars
 clean_env
 
-IFS=':' read -r uid gid additionalGids <<< "$RUNCVM_UIDGID"
-exec $RUNCVM_GUEST/bin/s6-applyuidgid -u $uid -g $gid -G "$additionalGids" "${ARGS[@]}"
+# Default UID/GID if broken logic above
+RUNCVM_UIDGID="${RUNCVM_UIDGID:-0:0:0}"
+
+echo "[VM-START] UIDGID: $RUNCVM_UIDGID" > /dev/console
+
+# Parse UID/GID
+uid=$(echo "$RUNCVM_UIDGID" | cut -d: -f1)
+gid=$(echo "$RUNCVM_UIDGID" | cut -d: -f2)
+additionalGids=$(echo "$RUNCVM_UIDGID" | cut -d: -f3-)
+
+echo "[VM-START] Parsed: uid=$uid gid=$gid additionalGids=$additionalGids" > /dev/console
+
+echo "[VM-START] Debug: Listing /" > /dev/console
+ls -la / > /dev/console
+echo "[VM-START] Debug: Listing /.runcvm" > /dev/console
+ls -la /.runcvm > /dev/console
+
+# Load original entrypoint (POSIX compliant)
+if [ -f /.runcvm/entrypoint ]; then
+  set --
+  while IFS= read -r line || [ -n "$line" ]; do
+    echo "[VM-START] Arg: $line" > /dev/console
+    set -- "$@" "$line"
+  done < /.runcvm/entrypoint
+else
+  echo "[VM-START] No entrypoint found, sleeping" > /dev/console
+  set -- /bin/sleep 3600
+fi
+
+# Execute
+if [ -n "$additionalGids" ]; then
+    exec "$S6_BINARY" -u $uid -g $gid -G "$additionalGids" "$@"
+else
+    exec "$S6_BINARY" -u $uid -g $gid "$@"
+fi
