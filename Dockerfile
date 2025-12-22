@@ -387,7 +387,7 @@ COPY --from=firecracker-kernel-build /build/linux/.config.bak /opt/runcvm/kernel
 # Note: unfs3 and rpcbind will be installed at runtime in the container
 # They are not bundled here as they need to run in container context
 
-RUN apk update && apk add --no-cache rsync unfs3 e2fsprogs-extra
+RUN apk update && apk add --no-cache rsync unfs3 e2fsprogs-extra python3 socat
 
 ARG RUNCVM_SCRIPTS_CACHEBUST
 RUN echo "Cache bust: 1766168000"

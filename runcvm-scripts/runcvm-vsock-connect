@@ -1,6 +1,9 @@
-#!/bin/sh
+#!/bin/bash
 # runcvm-vsock-connect
 # Connects to Firecracker UDS, handles handshake, and forwards IO unbuffered.
+
+exec 2>>/tmp/vsock-connect.log
+echo "[$(date)] VSOCK-CONNECT STARTED: $*" >&2
 
 UDS_PATH="$1"
 PORT="$2"
@@ -10,31 +13,35 @@ if [ -z "$UDS_PATH" ] || [ -z "$PORT" ]; then
   exit 1
 fi
 
-# Detect socat (prefer bundled)
-SOCAT_BIN="/.runcvm/guest/usr/bin/socat"
-if [ ! -x "$SOCAT_BIN" ]; then
-    SOCAT_BIN="socat"
+RUNCVM_GUEST=${RUNCVM_GUEST:-/.runcvm/guest}
+SOCAT_BIN="$RUNCVM_GUEST/usr/bin/socat"
+[ ! -x "$SOCAT_BIN" ] && SOCAT_BIN="socat"
+
+# Helper for the handshake skip
+skip_handshake() {
+    echo "DEBUG: Skipping handshake..." >&2
+    # Read characters one by one until a newline is found.
+    local char
+    while IFS='' read -r -n 1 char; do
+        byte=$(printf '%s' "$char" | od -An -t u1 | tr -d ' ')
+        echo "DEBUG: Read byte: $byte ($char)" >&2
+        if [[ "$char" == $'\n' ]]; then
+            echo "DEBUG: Handshake line end found." >&2
+            break
+        fi
+    done
+    echo "DEBUG: Handshake skipped. Starting forwarders..." >&2
+    # Forward the rest of the stream
+    cat
+}
+
+echo "DEBUG: Connecting to $UDS_PATH for port $PORT" >&2
+if [ ! -S "$UDS_PATH" ]; then
+  echo "ERROR: UDS socket not found at $UDS_PATH" >&2
+  exit 1
 fi
 
-# Firecracker VSOCK Handshake via socat:
-# 1. Send "CONNECT <port>\n" to the UDS
-# 2. Read "OK <assigned_port>\n" response  
-# 3. Forward remaining bidirectional data
-
-# We use a subshell pipeline:
-# - printf sends the handshake
-# - cat forwards stdin to socat
-# - socat connects to UDS and forwards output back
-# - We consume the "OK" line before passing data through
-
 {
-    # Send handshake
     printf "CONNECT %s\n" "$PORT"
-    # Forward all remaining stdin
-    exec cat
-} | $SOCAT_BIN - UNIX-CONNECT:"$UDS_PATH" | {
-    # Read and discard the "OK" handshake response line
-    IFS= read -r response_line
-    # Now forward all remaining data to stdout
-    exec cat
-}
+    cat
+} | $SOCAT_BIN - UNIX-CONNECT:"$UDS_PATH" | skip_handshake

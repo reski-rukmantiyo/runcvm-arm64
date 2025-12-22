@@ -44,7 +44,7 @@ RUNCVM_CONTAINER_MEM_OVERHEAD="256" # Memory (Mb) overhead to allow for Firecrac
 
 # Configure Logger for Runtime
 RUNCVM_COMPONENT_NAME="RunCVM-Runtime"
-RUNCVM_LOG_FILE="/tmp/runcvm-$USER.debug"
+export RUNCVM_LOG_FILE="${RUNCVM_LOG_FILE:-/tmp/runcvm-$USER.debug}"
 export RUNCVM_LOG_LEVEL="${RUNCVM_LOG_LEVEL:-DEBUG}"
 export RUNCVM_LOG_STDERR=1
 

@@ -199,9 +199,9 @@ if [ "$USE_VSOCK" = "1" ]; then
    fi
 
    # Start socat proxy: TCP-LISTEN -> EXEC:runcvm-vsock-connect
-   # The vsock-connect script handles the Firecracker handshake
-   # It's now a pure shell script,  no Python dependency
-   $SOCAT_BIN TCP-LISTEN:$PROXY_PORT,bind=127.0.0.1,reuseaddr EXEC:"$VSOCK_CONNECT_BIN /run/firecracker.vsock 22222" &
+   # The vsock-connect script handles the Firecracker handshake.
+   # It's a pure shell script that's robust against buffering and paths.
+   /.runcvm/guest/usr/bin/socat TCP-LISTEN:$PROXY_PORT,bind=127.0.0.1,reuseaddr EXEC:"/.runcvm/guest/bin/bash /.runcvm/guest/scripts/runcvm-vsock-connect /run/firecracker.vsock 22222" &
    PROXY_PID=$!
    
    # Cleanup proxy on exit
