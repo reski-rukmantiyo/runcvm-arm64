@@ -4,6 +4,10 @@
 import socket
 import sys
 import threading
+import traceback
+
+def log_error(msg):
+    print(f"[vsock-connect ERROR] {msg}", file=sys.stderr, flush=True)
 
 def forward(src, dst):
     try:
@@ -13,8 +17,8 @@ def forward(src, dst):
                 break
             dst.write(data)
             dst.flush()
-    except Exception:
-        pass
+    except Exception as e:
+        log_error(f"Forward error: {e}")
     finally:
         try:
             dst.close()
@@ -22,14 +26,14 @@ def forward(src, dst):
             pass
 
 def main():
-    if len(sys.argv) < 3:
-        print(f"Usage: {sys.argv[0]} <uds_path> <port>", file=sys.stderr)
-        sys.exit(1)
-
-    uds_path = sys.argv[1]
-    port = sys.argv[2]
-
     try:
+        if len(sys.argv) < 3:
+            log_error(f"Usage: {sys.argv[0]} <uds_path> <port>")
+            sys.exit(1)
+
+        uds_path = sys.argv[1]
+        port = sys.argv[2]
+
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         s.connect(uds_path)
         
@@ -40,7 +44,7 @@ def main():
         f = s.makefile('rb', buffering=0)
         line = f.readline()
         if not line.startswith(b"OK"):
-            print(f"Handshake failed: {line.decode().strip()}", file=sys.stderr)
+            log_error(f"Handshake failed: {line.decode().strip()}")
             sys.exit(1)
             
         # Start bidirectional forwarding
@@ -53,7 +57,8 @@ def main():
         forward(sys.stdin.buffer, peer_out)
         
     except Exception as e:
-        print(f"Error: {e}", file=sys.stderr)
+        log_error(f"Main error: {e}")
+        traceback.print_exc(file=sys.stderr)
         sys.exit(1)
 
 if __name__ == "__main__":

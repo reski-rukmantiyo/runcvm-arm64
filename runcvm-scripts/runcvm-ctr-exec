@@ -183,12 +183,32 @@ fi
 # If we are in VSOCK mode, we need a local proxy for this session.
 
 if [ "$USE_VSOCK" = "1" ]; then
-   # Start a temporary socat proxy for this exec session (on random high port or 22222 collision?)
-   # We can't bind to 22222 if the global one is there.
-   # But wait, runcvm-ctr-firecracker-k8s starts socat on 127.0.0.1:22222 -> VM_IP:22222.
-   # If we use VSOCK, we want 127.0.0.1:XXXX -> VSOCK.
+   # Start a temporary socat proxy for this exec session on a random port
+   # We can't bind to 22222 as it's used by the global TCP proxy
+   # Pick a random port for this VSOCK session
+   PROXY_PORT=$(shuf -i 30000-40000 -n 1 2>/dev/null || echo $((30000 + RANDOM % 10000)))
    
-   PROXY_PORT="22222"
+   # Detect socat
+   SOCAT_BIN="socat"
+   if ! command -v socat >/dev/null 2>&1; then
+      if [ -x "/.runcvm/guest/usr/bin/socat" ]; then
+         SOCAT_BIN="/.runcvm/guest/usr/bin/socat"
+      else
+         log_debug "Warning: socat not found, VSOCK transport may fail"
+      fi
+   fi
+
+   # Start socat proxy: TCP-LISTEN -> EXEC:runcvm-vsock-connect
+   # The proxy will exit when dbclient closes the connection
+   # Use sh -c to ensure python3 is found via PATH and args are properly quoted
+   $SOCAT_BIN TCP-LISTEN:$PROXY_PORT,bind=127.0.0.1,reuseaddr EXEC:"sh -c 'exec python3 $VSOCK_CONNECT_BIN /run/firecracker.vsock 22222'" &
+   PROXY_PID=$!
+   
+   # Cleanup proxy on exit
+   trap "kill $PROXY_PID 2>/dev/null" EXIT
+   
+   # Wait a bit for socat to start
+   sleep 0.5
    
    # Connect dbclient to this proxy port
    # Use exec to replace the shell process. This ensures runc waits on dbclient directly.
