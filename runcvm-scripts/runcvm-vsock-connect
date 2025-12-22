@@ -1,47 +1,60 @@
-#!/bin/sh
+#!/usr/bin/python3
 # runcvm-vsock-connect
 # Connects to Firecracker UDS, handles handshake, and forwards IO unbuffered.
+import socket
+import sys
+import threading
 
-UDS_PATH="$1"
-PORT="$2"
+def forward(src, dst):
+    try:
+        while True:
+            data = src.read(32768)
+            if not data:
+                break
+            dst.write(data)
+            dst.flush()
+    except Exception:
+        pass
+    finally:
+        try:
+            dst.close()
+        except:
+            pass
 
-if [ -z "$UDS_PATH" ] || [ -z "$PORT" ]; then
-  echo "Usage: $0 <uds_path> <port>" >&2
-  exit 1
-fi
+def main():
+    if len(sys.argv) < 3:
+        print(f"Usage: {sys.argv[0]} <uds_path> <port>", file=sys.stderr)
+        sys.exit(1)
 
-# Detect socat
-if command -v socat >/dev/null 2>&1; then
-    SOCAT_BIN="socat"
-elif [ -x "/.runcvm/guest/usr/bin/socat" ]; then
-    SOCAT_BIN="/.runcvm/guest/usr/bin/socat"
-else
-    echo "Error: socat not found" >&2
-    exit 1
-fi
+    uds_path = sys.argv[1]
+    port = sys.argv[2]
 
-# Pipeline Explanation:
-# 1. Input: { Handshake + Client Data (unbuffered via socat) }
-# 2. Connection: socat connects to UDS
-# 3. Output: { Read "OK" line + Server Data (unbuffered via socat) }
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.connect(uds_path)
+        
+        # Send handshake
+        s.sendall(f"CONNECT {port}\n".encode())
+        
+        # Read OK line
+        f = s.makefile('rb', buffering=0)
+        line = f.readline()
+        if not line.startswith(b"OK"):
+            print(f"Handshake failed: {line.decode().strip()}", file=sys.stderr)
+            sys.exit(1)
+            
+        # Start bidirectional forwarding
+        # Peer -> Client
+        t = threading.Thread(target=forward, args=(f, sys.stdout.buffer), daemon=True)
+        t.start()
+        
+        # Client -> Peer
+        peer_out = s.makefile('wb', buffering=0)
+        forward(sys.stdin.buffer, peer_out)
+        
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
 
-{ printf "CONNECT %s\n" "$PORT"; $SOCAT_BIN -u STDIN -; } | \
-$SOCAT_BIN UNIX-CONNECT:"$UDS_PATH" - | \
-{
-    # Read the first line (Handshake response "OK <port>")
-    # 'read' reads byte-by-byte on pipes in widely used shells (busybox ash, bash)
-    # effectively not over-reading.
-    IFS= read -r line
-    
-    # Check if handshake successful
-    case "$line" in
-        OK*) 
-            # Handshake OK. Forward the rest of the stream unbuffered.
-            $SOCAT_BIN -u STDIN STDOUT
-            ;;
-        *)
-            echo "Error: Firecracker Handshake Failed: $line" >&2
-            exit 1
-            ;;
-    esac
-}
+if __name__ == "__main__":
+    main()

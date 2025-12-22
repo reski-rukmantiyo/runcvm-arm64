@@ -123,8 +123,8 @@ if [ -e "/run/firecracker.vsock" ] && [ -x "$VSOCK_CONNECT_BIN" ]; then
    USE_VSOCK=1
    SSH_CONNECT_IP="127.0.0.1" # Connection to local socat proxy
    SSH_TARGET_IP="$SSH_CONNECT_IP"
+   log_debug "VSOCK: Found UDS at /run/firecracker.vsock"
 
-   log_debug "Using VSOCK transport for exec..."
    # Wait for Socket check (simple connectivity)??
    # Actually, we can just rely on the fallback or retry loop.
    # We don't have an easy way to "ping" VSOCK without connecting.
@@ -188,33 +188,10 @@ if [ "$USE_VSOCK" = "1" ]; then
    # But wait, runcvm-ctr-firecracker-k8s starts socat on 127.0.0.1:22222 -> VM_IP:22222.
    # If we use VSOCK, we want 127.0.0.1:XXXX -> VSOCK.
    
-   # Let's pick a random port for this session
-   PROXY_PORT=$(( 30000 + RANDOM % 10000 ))
-   
-   # Start socat proxy: TCP-LISTEN -> EXEC:runcvm-vsock-connect
-   # Detect socat
-   SOCAT_BIN="socat"
-   if ! command -v socat >/dev/null 2>&1; then
-      if [ -x "/.runcvm/guest/usr/bin/socat" ]; then
-         SOCAT_BIN="/.runcvm/guest/usr/bin/socat"
-      else
-         echo "Error: socat not found for VSOCK transport" >&2
-         exit 1
-      fi
-   fi
-
-   # Start socat proxy: TCP-LISTEN -> EXEC:runcvm-vsock-connect
-   # We remove 2>/dev/null to see errors in runcvm.debug or kubectl logs
-   $SOCAT_BIN TCP-LISTEN:$PROXY_PORT,bind=127.0.0.1,fork,reuseaddr EXEC:"$VSOCK_CONNECT_BIN /run/firecracker.vsock 22" &
-   PROXY_PID=$!
-   
-   # Cleanup proxy on exit
-   trap 'kill $PROXY_PID 2>/dev/null' EXIT
-   
-   # Wait a bit for socat to start
-   sleep 0.1
+   PROXY_PORT="22222"
    
    # Connect dbclient to this proxy port
+   # Use exec to replace the shell process. This ensures runc waits on dbclient directly.
    exec "$DBCLIENT_BIN" "${opts[@]}" -p $PROXY_PORT -y -y -i /.runcvm/dropbear/key root@127.0.0.1 "$command '$uidgid' '$(echo -n $cwd | to_bin)' '$args_bin' '$env_bin'"
 
 else

@@ -89,7 +89,8 @@ RUN apk update && \
     patchelf \
     unfs3 \
     nfs-utils \
-    zstd-libs
+    zstd-libs \
+    python3
 # Note: unfs3+rpcbind added for NFS volume sync
 
 # Install patched dnsmasq

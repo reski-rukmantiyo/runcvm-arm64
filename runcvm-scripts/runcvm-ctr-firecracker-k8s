@@ -600,6 +600,11 @@ cwd=$(printf '%s' "$cwd_bin" | from_bin)
 # Change to working directory
 cd "$cwd" 2>/dev/null || cd /
 
+# Set up PATH for guest tools
+RUNCVM_GUEST=/.runcvm/guest
+export PATH=$RUNCVM_GUEST/usr/sbin:$RUNCVM_GUEST/usr/bin:$RUNCVM_GUEST/sbin:$RUNCVM_GUEST/bin:$PATH
+export LD_LIBRARY_PATH=$RUNCVM_GUEST/lib:$RUNCVM_GUEST/usr/lib:$LD_LIBRARY_PATH
+
 # Decode and execute the command
 # The args are newline-separated after decoding
 if [ -n "$args_bin" ]; then
@@ -629,14 +634,7 @@ if [ -n "$args_bin" ]; then
   exec "$@"
 
 else
-  # Single command fallback (should not happen with standard runcvm)
-  # But if it does, assuming cmd comes from somewhere else?
-  # The original logic parsed cmd from lines.
-  # If args_bin is "cmd\narg1\narg2", then loop works.
-  :
-fi
-  fi
-else
+  # Fallback to sh if no args_bin
   exec /bin/sh
 fi
 VMEXECEOF
