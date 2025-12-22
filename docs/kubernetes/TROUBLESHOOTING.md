@@ -38,6 +38,20 @@ RunCVM implements "MAC Swapping" automatically. It assigns the Pod's **Real MAC*
 - Verify that `runcvm-ctr-firecracker-k8s` is performing the swap by checking `kubectl logs`.
 - Ensure the Host-side bridge (`br-eth0`) does **NOT** have an IP that conflicts with the gateway.
 
+**Cause: Interface Initialization Race**
+Hypervisors (like Firecracker) may take a few hundred milliseconds to fully initialize the virtio-net device. If the guest `init` script checks too early, it will report "No ethernet interfaces found".
+
+**Solution: Wait Loop**
+RunCVM includes a 10-second wait loop in `firecracker-init.sh` to poll for the interface:
+```bash
+# Look for eth0 in /sys/class/net
+for i in $(seq 1 100); do
+  ls /sys/class/net/eth* >/dev/null 2>&1 && break
+  sleep 0.1
+done
+```
+Verify this in guest logs: `[RunCVM-FC-Init] [INFO]   Waiting for eth* interface...`
+
 ---
 
 ## 3. Storage & NFS Mount Failures
@@ -56,6 +70,14 @@ RunCVM implements "MAC Swapping" automatically. It assigns the Pod's **Real MAC*
     ```bash
     ip route add 169.254.1.254 dev eth0
     ```
+
+**Cause: PVC Identification & Redirection**
+In some environments, PVCs mounted to `/var/lib/kubelet` might not be correctly identified by the runtime, leading to mounting failures or host-path conflicts.
+
+**Solution: Unique Volume Redirection**
+RunCVM redirects "True PVCs" (network volumes) to isolated host-side directories (`/.runcvm/vols/<id>`) before they are exported via NFS.
+- Look for `[RunCVM-Runtime] FIRECRACKER: PVC Redirect: /data -> /.runcvm/vols/<id>` in the host-side debug logs.
+- Verify that the guest mount matches: `169.254.1.254:/.runcvm/vols/<id> on /data type nfs`.
 
 ---
 
@@ -93,3 +115,70 @@ ip link show tap-eth0
 - `br-eth0` should have IP `169.254.1.254/32`.
 - `br-eth0` should **NOT** have the Pod's real IP (that's for the Guest).
 - Both the physical `eth0` and the VM `tap-eth0` should be members of `br-eth0`.
+
+---
+
+## 6. Boot Loop and Guest Tooling Failures
+**Symptoms:**
+- VM cycles through "Ready" and "Terminated" (CrashLoopBackOff).
+- Logs show `mke2fs` success but VM fails shortly after.
+- Errors like `mount: not found` or `socat: relocation error` in logs.
+- MySQL fails with `error: stat /proc/self/exe: no such file or directory`.
+
+**Cause 1: Rootfs Corruption (Truncation)**
+If the container content (e.g. MySQL ~2.4GB) is larger than the default rootfs size (256MB), the image might be truncated and corrupted during creation.
+
+**Cause 2: Incomplete PATH or Missing Tools**
+The minimal guest environment may not have `mount`, `ip`, or libraries in the expected `PATH`, preventing essential services (like `/proc` mounting) or networking from starting.
+
+**Solutions:**
+1. **Enable Content-Aware Resizing**: Ensure your `runcvm` version includes the `resize_rootfs_if_needed` fix which prevents shrinking rootfs below its content size.
+2. **Check Guest Tool Path**: Verify that `/.runcvm/guest/bin` and other guest tool directories are at the front of the `PATH` in `firecracker-init.sh`.
+3. **Proc Mount Check**: Many tools (including MySQL and `ps`) require `/proc`. Ensure the init script successfully mounts it:
+   ```bash
+   # Verify inside the VM
+   mount | grep proc
+   ```
+4. **Library Dependencies**: If you see `relocation error`, check that required libraries (like OpenSSL for `socat`) are bundled in `/.runcvm/guest/lib`.
+
+---
+
+## 7. Binary Mismatches (Host vs. Guest)
+**Symptoms:**
+- Logs show `required file not found` when executing `jq` or `kubectl`.
+- `docker exec` returns `Exit before auth`.
+
+**Cause: ELF Interpreter Conflict**
+RunCVM involves two distinct environments:
+1.  **Host (Node)**: Where `runcvm-runtime` executes (usually Ubuntu/Debian/glibc).
+2.  **Guest (VM)**: Where the container executes (usually Alpine/musl).
+
+If a script on the host tries to use a binary bundled for the guest, it will fail because the host cannot find the `musl` dynamic linker at the guest-specific path.
+
+**Solution:**
+- **Host-side**: Always use system binaries (`/usr/bin/jq`, `/usr/local/bin/k3s`) instead of bundled versions.
+- **Guest-side**: Use bundled binaries with the absolute path to the linker (`/.runcvm/guest/lib/ld`).
+- **json.sh Wrapper**: The `jq` function in `common/json.sh` is designed to intelligently switch between native execution (on host) and linker-prepended execution (on guest):
+  ```bash
+  # Logic inside json.sh
+  if [[ "$RUNCVM_JQ" == "$RUNCVM"* ]]; then
+    $RUNCVM_LD "$RUNCVM_JQ" "$@"
+  else
+    "$RUNCVM_JQ" "$@"
+  fi
+  ```
+
+---
+
+## 8. Logging Permissions & Conflicts
+**Symptoms:**
+- `Permission denied` when writing to `/tmp/runcvm-runtime.log`.
+
+**Cause:**
+Multiple containers in a Kubernetes pod (e.g. `pause` and `mysql`) execute as different users but may attempt to write to the same global log file.
+
+**Solution: Per-Container Logs**
+RunCVM uses isolated debug logs for each container ID to prevent resource contention and permission issues:
+- Logs are stored at `/tmp/runcvm-<id>.debug`.
+- Use `sudo ls -l /tmp/runcvm*.debug` on the host to find the relevant log for your container.
+- These logs capture detailed runtime initialization and Kubernetes metadata discovery.

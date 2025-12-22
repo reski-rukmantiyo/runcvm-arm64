@@ -92,3 +92,51 @@ create_rootfs_from_dir() {
   log "Rootfs created successfully"
   return 0
 }
+
+# Safely resize rootfs if target size is larger than current size
+resize_rootfs_if_needed() {
+  local image_path="$1"
+  local target_size_str="$2"
+  
+  # Default to 256M if not specified
+  [ -z "$target_size_str" ] && target_size_str="256M"
+  
+  # Convert target size to bytes for comparison
+  # Handle M and G suffixes (case insensitive)
+  local target_val=$(echo "$target_size_str" | busybox sed 's/[GgMm]//g')
+  local target_bytes=0
+  
+  case "$target_size_str" in
+    *[Gg]) target_bytes=$((target_val * 1024 * 1024 * 1024)) ;;
+    *[Mm]) target_bytes=$((target_val * 1024 * 1024)) ;;
+    *)     target_bytes="$target_val" ;;
+  esac
+  
+  # Get current size in bytes
+  local current_bytes=$(busybox ls -l "$image_path" 2>/dev/null | busybox awk '{print $5}')
+  [ -z "$current_bytes" ] && current_bytes=0
+  
+  log "Checking rootfs size: Current=${current_bytes}B, Target=${target_bytes}B ($target_size_str)"
+  
+  if [ "$current_bytes" -ge "$target_bytes" ]; then
+    log "Rootfs already large enough ($((current_bytes / 1024 / 1024))MB), skipping resize."
+    return 0
+  fi
+  
+  log "Resizing rootfs from $((current_bytes / 1024 / 1024))MB to $target_size_str..."
+  
+  if command -v truncate >/dev/null 2>&1; then
+     truncate -s "$target_size_str" "$image_path"
+  else
+     # Fallback to dd (use bytes for precision)
+     busybox dd of="$image_path" bs=1 count=0 seek="$target_bytes" 2>/dev/null || true
+  fi
+  
+  if command -v resize2fs >/dev/null 2>&1; then
+     if ! resize2fs "$image_path" >/dev/null 2>&1; then
+        log "WARNING: resize2fs failed!"
+     fi
+  else
+     log "WARNING: resize2fs not found, rootfs will be small!"
+  fi
+}

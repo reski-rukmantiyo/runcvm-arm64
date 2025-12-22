@@ -116,13 +116,20 @@ RUN /usr/local/bin/make-bundelf-bundle.sh --bundle && \
     mkdir -p $BUNDELF_CODE_PATH/bin && \
     ls -l $BUNDELF_CODE_PATH/bin/busybox && \
     ldd $BUNDELF_CODE_PATH/bin/busybox && \
+    # cd into BUNDELF_CODE_PATH/bin for symlinking
     cd $BUNDELF_CODE_PATH/bin && \
     for cmd in \
     uname mkdir rmdir cp mv free awk sleep base64 cat chgrp chmod cut grep head hostname init ln ls \
-    mkdir poweroff ps rm rmdir route sh sysctl tr touch ipcalc; \
+    mkdir poweroff ps rm rmdir route sh sysctl tr touch ipcalc \
+    ip mount umount df du sed find xargs tail head which; \
     do \
-    ln -s busybox $cmd; \
+    ln -s busybox $cmd 2>/dev/null || true; \
     done && \
+    # Explicitly copy libssl and libcrypto for socat and others
+    cp -n /lib/libssl.so.* $BUNDELF_CODE_PATH/lib/ 2>/dev/null || true && \
+    cp -n /lib/libcrypto.so.* $BUNDELF_CODE_PATH/lib/ 2>/dev/null || true && \
+    cp -n /usr/lib/libssl.so.* $BUNDELF_CODE_PATH/lib/ 2>/dev/null || true && \
+    cp -n /usr/lib/libcrypto.so.* $BUNDELF_CODE_PATH/lib/ 2>/dev/null || true && \
     mkdir -p $BUNDELF_CODE_PATH/usr/share && \
     cp -a /etc/terminfo $BUNDELF_CODE_PATH/usr/share && \
     # Copy unfs3 (unfsd) binary and ALL its dependencies for NFS volume sync

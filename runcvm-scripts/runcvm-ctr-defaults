@@ -1,6 +1,7 @@
 #!/bin/bash
 
 RUNCVM_GUEST=${RUNCVM_GUEST:-/.runcvm/guest}
+RUNCVM_LD=$RUNCVM_GUEST/lib/ld
 RUNCVM_PATH=$RUNCVM_GUEST/usr/sbin:$RUNCVM_GUEST/usr/bin:$RUNCVM_GUEST/sbin:$RUNCVM_GUEST/bin:$RUNCVM_GUEST/usr/lib/qemu
 
 SSHD_PORT=22222
@@ -134,7 +135,11 @@ create_aliases() {
   do
     local cmd_path
     if cmd_path=$(which "$cmd"); then
-      eval "$cmd() { $cmd_path \"\$@\"; }"
+      if [ -x "$RUNCVM_LD" ]; then
+        eval "$cmd() { $RUNCVM_LD $cmd_path \"\$@\"; }"
+      else
+        eval "$cmd() { $cmd_path \"\$@\"; }"
+      fi
     fi
   done
 }

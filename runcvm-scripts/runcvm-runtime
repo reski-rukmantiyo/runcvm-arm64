@@ -1,4 +1,4 @@
-#!/opt/runcvm/lib/ld-musl-aarch64.so.1 /opt/runcvm/bin/bash
+#!/bin/bash
 
 # REFERENCES
 
@@ -20,11 +20,12 @@ else
   RUNCVM_LD=""
 fi
 
-if [ -x "$RUNCVM/usr/bin/jq" ]; then
-  RUNCVM_JQ=$RUNCVM/usr/bin/jq
-else
-  RUNCVM_JQ="jq"
-fi
+# Standard binaries for Host-side (Node) execution
+RUNCVM_JQ="/usr/bin/jq"
+[ ! -x "$RUNCVM_JQ" ] && RUNCVM_JQ="jq"
+
+K3S_BIN="/usr/local/bin/k3s"
+[ ! -x "$K3S_BIN" ] && K3S_BIN="k3s"
 RUNCVM_VM_MOUNTPOINT="/vm"
 RUNCVM_GUEST=/.runcvm/guest
 RUNCVM_ENTRYPOINT=$RUNCVM_GUEST/scripts/runcvm-ctr-entrypoint
@@ -43,8 +44,9 @@ RUNCVM_CONTAINER_MEM_OVERHEAD="256" # Memory (Mb) overhead to allow for Firecrac
 
 # Configure Logger for Runtime
 RUNCVM_COMPONENT_NAME="RunCVM-Runtime"
-RUNCVM_LOG_FILE="/var/log/runcvm.debug"
+RUNCVM_LOG_FILE="/tmp/runcvm-$USER.debug"
 export RUNCVM_LOG_LEVEL="${RUNCVM_LOG_LEVEL:-DEBUG}"
+export RUNCVM_LOG_STDERR=1
 
 # Source logging functions
 . "$RUNCVM/scripts/common/logging.sh"
@@ -157,8 +159,34 @@ COMMAND="$1"
 shift
 
 if [ "$COMMAND" = "create" ]; then
-
-  log_debug "Command: create"
+  # USAGE:
+  #    runc create [command options] <container-id>
+  #   
+  # PARSE 'create' COMMAND OPTIONS to get ID for logging
+  CREATE_ARGS=("$@")
+  while true
+  do
+    case "$1" in
+      --bundle|-b) shift; shift; continue; ;;
+      --console-socket|--pid-file|--preserve-fds) shift; shift; continue; ;;
+      --no-pivot|--no-new-keyring) shift; continue; ;;
+      *) break; ;;
+    esac
+  done
+  CREATE_ID="$1"
+  set -- "${CREATE_ARGS[@]}" # Restore args for the real loop later
+  
+  RUNCVM_LOG_FILE="/tmp/runcvm-${CREATE_ID:-unknown}.debug"
+  touch "$RUNCVM_LOG_FILE" 2>/dev/null || true
+  chmod 666 "$RUNCVM_LOG_FILE" 2>/dev/null || true
+  
+  # Redirect stderr for the whole create command to capture set -x
+  # but ONLY if we haven't already
+  exec 3>&2
+  exec 2>> "$RUNCVM_LOG_FILE"
+  
+  set -x
+  log "DEBUG: RunCVM Runtime Command: create (ID=$CREATE_ID)"
   
   # USAGE:
   #    runc create [command options] <container-id>
@@ -192,7 +220,7 @@ if [ "$COMMAND" = "create" ]; then
   chmod 700 "$RUNCVM_SOCKET_DIR"
 
   CFG="$BUNDLE/config.json"
-  ROOT=$(jq -r .root.path $CFG)
+  ROOT=$($RUNCVM_JQ -r .root.path "$CFG" 2>/dev/null || echo "")
 
   # Allow user to enable debug logging
   if [ "$(get_config_env RUNCVM_RUNTIME_DEBUG)" = "1" ]; then
@@ -204,7 +232,7 @@ if [ "$COMMAND" = "create" ]; then
   log_debug "Command: create bundle=$BUNDLE id=$ID root=$ROOT"
   
   # Save formatted config.json
-  jq -r . <$CFG >/tmp/config.json-$$-1
+  $RUNCVM_JQ -r . <"$CFG" >/tmp/config.json-$$-1 2>/dev/null || true
 
   # ============================================================
   # SANDBOX CONTAINER DETECTION
@@ -213,6 +241,9 @@ if [ "$COMMAND" = "create" ]; then
   # ============================================================
   if is_sandbox_container "$CFG"; then
     log "Sandbox container detected - bypassing RunCVM, passing to runc"
+    # Restore original stderr
+    exec 2>&3
+    exec 3>&-
     exec /usr/bin/runc "${COMMAND_LINE[@]}"
   fi
   # ============================================================
@@ -222,12 +253,18 @@ if [ "$COMMAND" = "create" ]; then
   # Check if this is a Kubernetes workload (not sandbox)
   # ============================================================
   IS_K8S=0
-  if [ -n "$(get_config_env KUBERNETES_SERVICE_HOST)" ]; then
+  if jq_get "$CFG" '.process.env[]' 2>/dev/null | grep -q "^KUBERNETES_SERVICE_HOST="; then
      IS_K8S=1
-     log "Kubernetes workload detected (KUBERNETES_SERVICE_HOST)"
+     log "Kubernetes workload detected (KUBERNETES_SERVICE_HOST in config.json)"
   elif jq_get "$CFG" '.annotations["io.kubernetes.cri.container-type"]' 2>/dev/null | grep -q "container"; then
      IS_K8S=1
      log "Kubernetes workload detected (CRI annotation)"
+  fi
+  
+  # Fallback: check environment of the runtime itself if containerd passed it
+  if [ "$IS_K8S" = "0" ] && [ -n "$KUBERNETES_SERVICE_HOST" ]; then
+     IS_K8S=1
+     log "Kubernetes workload detected (KUBERNETES_SERVICE_HOST in runtime env)"
   fi
   
   if [ "$IS_K8S" = "1" ]; then
@@ -416,6 +453,98 @@ if [ "$COMMAND" = "create" ]; then
     jq_set "$CFG" --arg host "$HOST_CACHE_DIR" --arg ctr "$CTR_CACHE_DIR" \
       '.mounts += [{"destination":$ctr,"type":"bind","source":$host,"options":["bind","private","rw"]}]'
 
+    # ==========================================================================
+    # KUBERNETES PVC DETECTION & REDIRECTION
+    # ==========================================================================
+    # Strategy:
+    # 1. Identify Pod Namespace and Name from annotations
+    # 2. Query kubectl for Pod volumes and their provisioners
+    # 3. Mark volumes as "True PVC" if they don't use local/hostPath provisioners
+    # 4. Redirect "True PVCs" to /.runcvm/vols/<id> for clean NFS export
+    
+    # Try both standard CRI and legacy annotations
+    POD_NAMESPACE=$(jq_get "$CFG" '.annotations["io.kubernetes.cri.sandbox-namespace"] // .annotations["io.kubernetes.pod.namespace"]')
+    POD_NAME=$(jq_get "$CFG" '.annotations["io.kubernetes.cri.sandbox-name"] // .annotations["io.kubernetes.pod.name"]')
+    
+    log "LOUD: K8S_DETECTION: IS_K8S=$IS_K8S, POD_NAME=$POD_NAME, POD_NAMESPACE=$POD_NAMESPACE"
+    log "LOUD: CFG_ANNOTATIONS=$($RUNCVM_JQ -c '.annotations' "$CFG" 2>/dev/null)"
+    
+    TRUE_PVC_PATHS=""
+    
+    if [ "$IS_K8S" = "1" ] && [ -n "$POD_NAME" ] && [ "$POD_NAME" != "null" ]; then
+      log "K8S: Detecting True PVCs for Pod $POD_NAME in $POD_NAMESPACE..."
+      
+      # Use full path for k3s to be safe
+      K3S_BIN="/usr/local/bin/k3s"
+      [ ! -x "$K3S_BIN" ] && K3S_BIN="k3s"
+
+      # Get pod JSON to inspect volumes and mounts
+      POD_JSON_FILE="/tmp/pod-$ID.json"
+      $K3S_BIN kubectl get pod "$POD_NAME" -n "$POD_NAMESPACE" -o json > "$POD_JSON_FILE" 2>/dev/null || true
+      
+      if [ -f "$POD_JSON_FILE" ]; then
+        # Map of MountPath -> IsTruePVC
+        # We match by destination path
+        
+        # 1. Get all PVC names and their provisioners
+        PVC_INFO_FILE="/tmp/pvc-info-$ID.txt"
+        rm -f "$PVC_INFO_FILE"
+        
+        PVC_LIST_TMP="/tmp/pvc_list.$ID.tmp"
+        $RUNCVM_JQ -r '.spec.volumes[] | select(.persistentVolumeClaim != null) | "\(.name) \(.persistentVolumeClaim.claimName)"' "$POD_JSON_FILE" > "$PVC_LIST_TMP" 2>/dev/null || true
+        
+        while read -r vol_name pvc_name; do
+           [ -z "$vol_name" ] || [ "$vol_name" = "null" ] && continue
+           
+           PVC_JSON=$($K3S_BIN kubectl get pvc "$pvc_name" -n "$POD_NAMESPACE" -o json 2>/dev/null || true)
+           if [ -n "$PVC_JSON" ]; then
+             PROVISIONER=$(echo "$PVC_JSON" | $RUNCVM_JQ -r '.metadata.annotations["volume.kubernetes.io/storage-provisioner"] // .spec.storageClassName // "unknown"')
+             
+             IS_HOST_PATH=0
+             case "$PROVISIONER" in
+               "kubernetes.io/no-provisioner") # | "rancher.io/local-path" | "local-path")
+                 IS_HOST_PATH=1
+                 ;;
+             esac
+             
+             if [ "$IS_HOST_PATH" = "0" ]; then
+               log "K8S: Volume $vol_name (PVC $pvc_name) is a TRUE PVC (Provisioner: $PROVISIONER)"
+               echo "$vol_name" >> "$PVC_INFO_FILE"
+             else
+               log "K8S: Volume $vol_name (PVC $pvc_name) is HostPath-based (Provisioner: $PROVISIONER)"
+             fi
+           fi
+        done < "$PVC_LIST_TMP"
+        rm -f "$PVC_LIST_TMP"
+
+        # 2. Map Volume names to MountPaths for the CURRENT container
+        # Note: A pod has many containers. We need the one with this $ID.
+        # But wait, runcvm-runtime doesn't know the container name in K8s, just the ID.
+        # IDs match CRI container IDs.
+        # Let's try to find the container in the pod that matches our ID.
+        # The annotation 'io.kubernetes.container.name' has the name.
+        # Try both standard CRI and legacy annotations
+        K8S_CONTAINER_NAME=$(jq_get "$CFG" '.annotations["io.kubernetes.cri.container-name"] // .annotations["io.kubernetes.container.name"]')
+        
+        if [ -n "$K8S_CONTAINER_NAME" ] && [ "$K8S_CONTAINER_NAME" != "null" ]; then
+           log "K8S: Matching mounts for container $K8S_CONTAINER_NAME..."
+           # Find mountPaths for volumes that are TRUE PVCs
+           MNT_LIST_TMP="/tmp/mnt_list.$ID.tmp"
+           $RUNCVM_JQ -r --arg cname "$K8S_CONTAINER_NAME" '.spec.containers[] | select(.name == $cname) | .volumeMounts[] | "\(.mountPath) \(.name)"' "$POD_JSON_FILE" > "$MNT_LIST_TMP" 2>/dev/null || true
+           
+           while read -r mnt_path vol_name; do
+             if grep -q "^$vol_name$" "$PVC_INFO_FILE" 2>/dev/null; then
+                log "K8S: Found True PVC mount at $mnt_path"
+                TRUE_PVC_PATHS="${TRUE_PVC_PATHS} ${mnt_path}"
+             fi
+           done < "$MNT_LIST_TMP"
+           rm -f "$MNT_LIST_TMP"
+        fi
+        
+        rm -f "$POD_JSON_FILE" "$PVC_INFO_FILE"
+      fi
+    fi
+
     # Pick random port in range 1000-1050
     NFS_PORT=$((1000 + RANDOM % 51))
     
@@ -428,6 +557,14 @@ if [ "$COMMAND" = "create" ]; then
     NFS_HOST_EXPORT_LIST=""
     
     # First pass: Aggregate all valid bind mounts for NFS
+    MOUNTS_FOR_NFS_TMP="/tmp/mounts_nfs.$ID.tmp"
+    $RUNCVM_JQ -r --arg vm "$RUNCVM_VM_MOUNTPOINT" '
+      .mounts[] | 
+      select(.type == "bind") | 
+      select(.destination | startswith($vm + "/")) |
+      "\(.source):\(.destination | ltrimstr($vm))"
+    ' "$CFG" > "$MOUNTS_FOR_NFS_TMP" 2>/dev/null || true
+
     while IFS=: read -r src dst; do
       [ -z "$src" ] && continue
       [ -z "$dst" ] && continue
@@ -440,18 +577,44 @@ if [ "$COMMAND" = "create" ]; then
       esac
       
       if [ -e "$src" ]; then
-        # Check for duplicates in the current list
-        if echo "$NFS_VOLUMES" | grep -q "${src}:${dst}"; then
-          continue
+        # Check if this destination path was identified as a True PVC
+        IS_TRUE_PVC=0
+        for tpvc_path in $TRUE_PVC_PATHS; do
+          if [ "$tpvc_path" = "$dst" ]; then
+            IS_TRUE_PVC=1
+            break
+          fi
+        done
+
+        # If it's a True PVC, redirect export to a unique directory
+        if [ "$IS_TRUE_PVC" = "1" ]; then
+           # Create unique ID based on destination
+           VOL_ID=$(echo -n "$dst" | md5sum | cut -d' ' -f1 | cut -c1-8)
+           UNIQUE_DST="/.runcvm/vols/$VOL_ID"
+           log "FIRECRACKER:   PVC Redirect: $dst -> $UNIQUE_DST (src: $src)"
+           
+           # Create the unique directory in the container
+           # First, ensure it exists in the container bundle (if we can)
+           # Since we are the runtime, we can create it in the OCI rootfs if it's writable
+           # But it's better to just add a bind mount to a tempfs if needed.
+           # Actually, we can just add a bind mount to config.json!
+           # This mounts the host $src to the container's $UNIQUE_DST.
+           jq_set "$CFG" --arg src "$src" --arg dst "$UNIQUE_DST" \
+             '.mounts += [{"destination":$dst,"type":"bind","source":$src,"options":["bind","private","rw"]}]'
+           
+           # For NFS export, use the container-relative path $UNIQUE_DST
+           container_path="$UNIQUE_DST"
+        else
+           log "FIRECRACKER:   Volume: $src -> $dst"
+           container_path="${RUNCVM_VM_MOUNTPOINT}${dst}"
         fi
 
-        log "FIRECRACKER:   Volume: $src -> $dst"
         [ "$RUNCVM_LOG_LEVEL" = "DEBUG" ] && echo "[DEBUG] FIRECRACKER: Volume: $src -> $dst (port $NFS_PORT)" >&2
         
         # Build paths for unfsd (inside container)
         # Note: $dst here is the path relative to the VM root, e.g. /test-mount
-        # Inside the container, these are at $RUNCVM_VM_MOUNTPOINT/$dst
-        container_path="${RUNCVM_VM_MOUNTPOINT}${dst}"
+        # Inside the container, these are at $RUNCVM_VM_MOUNTPOINT/$dst (for hostPaths)
+        # or $UNIQUE_DST (for True PVCs)
 
         # Build env var for guest (pipe-separated)
         if [ -n "$NFS_VOLUMES" ]; then
@@ -462,12 +625,8 @@ if [ "$COMMAND" = "create" ]; then
           NFS_HOST_EXPORT_LIST="${container_path}"
         fi
       fi
-    done < <(jq -r --arg vm "$RUNCVM_VM_MOUNTPOINT" '
-      .mounts[] | 
-      select(.type == "bind") | 
-      select(.destination | startswith($vm + "/")) |
-      "\(.source):\(.destination | ltrimstr($vm))"
-    ' "$CFG" 2>/dev/null)
+    done < "$MOUNTS_FOR_NFS_TMP"
+    rm -f "$MOUNTS_FOR_NFS_TMP"
 
     # DEBUG: Log namespaces section to help troubleshoot extraction
     if [ "$RUNCVM_LOG_LEVEL" = "DEBUG" ]; then
@@ -702,7 +861,7 @@ if [ "$COMMAND" = "create" ]; then
   fi
 
   # Save formatted config.json for debugging
-  jq -r . <$CFG >/tmp/config.json-$$-2 2>/dev/null || true
+  $RUNCVM_JQ -r . <"$CFG" >/tmp/config.json-$$-2 2>/dev/null || true
   
 elif [ "$COMMAND" = "exec" ]; then
 
@@ -747,8 +906,8 @@ elif [ "$COMMAND" = "exec" ]; then
   log_debug "Command line: $0 ${COMMAND_LINE[@]@Q}"
   log_debug "Command: exec process=$PROCESS"
   
-  # Save formatted process.json
-  jq -r . <$PROCESS >/tmp/process.json-$$-1
+  # Save formatted process.json for debugging
+  $RUNCVM_JQ -r . <"$PROCESS" >/tmp/process.json-$$-1 2>/dev/null || true
 
   ARG1=$(jq_get "$PROCESS" '.args[0]')
   if [ "$ARG1" = "---" ]; then
@@ -773,7 +932,7 @@ elif [ "$COMMAND" = "exec" ]; then
   fi
   
   # Save formatted process.json for debugging
-  jq -r . <$PROCESS >/tmp/process.json-$$-2 2>/dev/null || true
+  $RUNCVM_JQ -r . <"$PROCESS" >/tmp/process.json-$$-2 2>/dev/null || true
 
 elif [ "$COMMAND" = "delete" ]; then
 
@@ -975,5 +1134,11 @@ elif [ "$COMMAND" = "update" ]; then
 fi
 
 log_debug "--- LOG ENDS ---"
+
+# Restore original stderr if it was redirected
+if [ "$COMMAND" = "create" ]; then
+    exec 2>&3
+    exec 3>&-
+fi
 
 exec /usr/bin/runc "${COMMAND_LINE[@]}"

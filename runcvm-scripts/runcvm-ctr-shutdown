@@ -6,14 +6,11 @@
 . /.runcvm/config
 
 poweroff() {
-  # Try ACPI poweroff
-  $RUNCVM_GUEST/scripts/runcvm-ctr-qemu-poweroff
-  
-  # Try running busybox poweroff
-  $RUNCVM_GUEST/scripts/runcvm-ctr-exec 0:0 / 0 0 $RUNCVM_GUEST/bin/poweroff &>/dev/null
-
-  # Try killing the VM's PID 1
-  $RUNCVM_GUEST/scripts/runcvm-ctr-exec 0:0 / 0 0 $RUNCVM_GUEST/bin/busybox kill 1 &>/dev/null
+  # Notify the VM's PID 1 to shut down gracefully
+  # This triggers the SIGTERM trap we added to firecracker-init.sh
+  # We use SIGTERM (15) to PID 1
+  echo "Sending SIGTERM to guest PID 1..."
+  $RUNCVM_GUEST/scripts/runcvm-ctr-exec 0:0 / 0 0 $RUNCVM_GUEST/bin/busybox kill -15 1 || true
 }
 
 poweroff

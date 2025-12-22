@@ -30,4 +30,17 @@ cd "$cwd" 2>/dev/null && unset OLDPWD || error
 # Load defaults and aliases
 . $RUNCVM_GUEST/scripts/runcvm-ctr-defaults
 
-exec -c $RUNCVM_GUEST/bin/busybox env -i "${env[@]}" $RUNCVM_GUEST/bin/s6-applyuidgid -u $uid -g $gid -G "$additionalGids" "${args[@]}"
+# Ensure guest tools are in PATH for the executed command
+found_path=0
+for i in "${!env[@]}"; do
+  if [[ "${env[$i]}" == PATH=* ]]; then
+    env[$i]="PATH=$RUNCVM_PATH:${env[$i]#PATH=}"
+    found_path=1
+    break
+  fi
+done
+if [ "$found_path" -eq 0 ]; then
+  env+=("PATH=$RUNCVM_PATH")
+fi
+
+exec -c /.runcvm/guest/lib/ld $RUNCVM_GUEST/bin/busybox env -i "${env[@]}" /.runcvm/guest/lib/ld $RUNCVM_GUEST/bin/s6-applyuidgid -u $uid -g $gid -G "$additionalGids" "${args[@]}"

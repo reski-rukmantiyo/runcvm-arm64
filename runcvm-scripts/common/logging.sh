@@ -47,8 +47,10 @@ _log() {
     
     # Check if we should log to file
     if [ -n "$RUNCVM_LOG_FILE" ] && [ "$RUNCVM_LOG_FILE" != "/dev/stderr" ]; then
-       # Append to log file if directory satisfies rights
-       echo "$log_entry" >> "$RUNCVM_LOG_FILE" 2>/dev/null || true
+       # Append to log file only if writable to avoid "Permission denied" errors
+       if [ -w "$RUNCVM_LOG_FILE" ] || { [ ! -e "$RUNCVM_LOG_FILE" ] && [ -w "$(dirname "$RUNCVM_LOG_FILE" 2>/dev/null || echo ".")" ]; }; then
+          echo "$log_entry" >> "$RUNCVM_LOG_FILE" 2>/dev/null || true
+       fi
     fi
     
     # Output to stderr if configured OR if ERROR

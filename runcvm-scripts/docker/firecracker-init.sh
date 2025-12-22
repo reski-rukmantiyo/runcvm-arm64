@@ -12,15 +12,23 @@ INITEOF
 # This runs as PID 1 inside the Firecracker VM
 
 # Mount essential filesystems at the very beginning
-mount -t proc proc /proc 2>/dev/null || true
-mount -t sysfs sys /sys 2>/dev/null || true
-mount -t devtmpfs dev /dev 2>/dev/null || true
+/.runcvm/guest/bin/busybox mount -t proc proc /proc 2>/dev/null || true
+/.runcvm/guest/bin/busybox mount -t sysfs sys /sys 2>/dev/null || true
+/.runcvm/guest/bin/busybox mount -t devtmpfs dev /dev 2>/dev/null || true
+
+# Double check /proc is mounted (critical for many tools and MySQL entrypoint)
+if [ ! -f /proc/uptime ]; then
+  echo "CRITICAL: /proc not mounted, retrying..."
+  # Try to use busybox directly if mount is not in path yet
+  /.runcvm/guest/bin/busybox mount -t proc proc /proc 2>/dev/null || true
+fi
 
 # ============================================================
 # LOGGING & PROFILING SYSTEM (sh-compatible)
 # ============================================================
 
-export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# Set PATH to include bundled guest tools FIRST
+export PATH=/.runcvm/guest/usr/sbin:/.runcvm/guest/usr/bin:/.runcvm/guest/sbin:/.runcvm/guest/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # Boot timing profiler
 _T() { 
@@ -81,7 +89,7 @@ _T "starting-init"
 mount -o remount,rw / 2>/dev/null || true
 _T "remount-rw"
 
-export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export PATH=/.runcvm/guest/usr/sbin:/.runcvm/guest/usr/bin:/.runcvm/guest/sbin:/.runcvm/guest/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # DEBUG: Check environment
 if is_debug; then
@@ -311,6 +319,15 @@ fi
 # Configure all network interfaces from config files or DHCP
 log INFO "Configuring network..."
 
+# Wait for at least one ethernet interface to appear in /sys/class/net
+log DEBUG "Waiting for eth* interface to appear in /sys/class/net..."
+for i in $(seq 1 100); do
+  if ls /sys/class/net/eth* >/dev/null 2>&1; then
+    break
+  fi
+  sleep 0.1
+done
+
 # We need to find all eth* interfaces
 # Since we might not have 'ls' or 'find' behaving standardly, we look at sysfs
 if is_debug; then
@@ -524,13 +541,13 @@ mount_nfs_volumes() {
     [ -z "$dst" ] && continue
     
     log INFO "  Mounting $src_path -> $dst (port $nfs_port)..."
-    mkdir -p "$dst"
+    /.runcvm/guest/bin/busybox mkdir -p "$dst"
     
     # Mount via NFS v3 with nolock (no separate lockd needed)
-    mount -t nfs -o vers=3,nolock,tcp,port="$nfs_port",mountport="$((nfs_port + 1))" \
-      "$host_ip:$src_path" "$dst" 2>&1 | sed 's/^/    /'
+    /.runcvm/guest/lib/ld /.runcvm/guest/bin/mount -t nfs -o vers=3,nolock,tcp,port="$nfs_port",mountport="$((nfs_port + 1))" \
+      "$host_ip:$src_path" "$dst" 2>&1 | /.runcvm/guest/bin/busybox sed 's/^/    /'
     
-    if mount | grep -q "$dst"; then
+    if /.runcvm/guest/lib/ld /.runcvm/guest/bin/mount | /.runcvm/guest/bin/busybox grep -q "$dst"; then
       log INFO "  ✓ Successfully mounted $dst (NFS)"
     else
       log ERROR "  ✗ Failed to mount $dst via NFS"
@@ -607,6 +624,15 @@ log INFO "========== DROPBEAR SETUP END =========="
 # 3. Set up trap to forward signals to child
 # 4. Wait for child to finish
 # 5. Trigger proper shutdown (reboot -f) - PID 1 must never exit normally
+
+# Setup signal handler for graceful shutdown
+# This is triggered when the host sends SIGTERM to guest PID 1
+poweroff_handler() {
+  log INFO "Received SIGTERM, shutting down VM..."
+  sync
+  runcvm_busybox poweroff -f || poweroff -f || /sbin/reboot -f
+}
+trap poweroff_handler SIGTERM
 
 # Determine what to run
 # Priority:

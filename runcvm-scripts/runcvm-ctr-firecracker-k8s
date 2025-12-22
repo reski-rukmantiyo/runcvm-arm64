@@ -299,23 +299,7 @@ main() {
     fi
     
     # Expand to full size
-    # Allow user to override via env
-    TARGET_SIZE="${RUNCVM_ROOTFS_SIZE:-256M}"
-    
-    log "Resizing rootfs to $TARGET_SIZE..."
-    if command -v truncate >/dev/null 2>&1; then
-       truncate -s "$TARGET_SIZE" "$rootfs_path"
-    else
-       # Fallback to dd (2GB = 2147483648 bytes)
-       # Busybox dd might not support G suffix, so use bytes
-       local size_bytes=$(( 2 * 1024 * 1024 * 1024 ))
-       busybox dd of="$rootfs_path" bs=1 count=0 seek="$size_bytes" 2>/dev/null || true
-    fi
-    if command -v resize2fs >/dev/null 2>&1; then
-       resize2fs "$rootfs_path" >/dev/null 2>&1
-    else
-       log "WARNING: resize2fs not found, rootfs will be small!"
-    fi
+    resize_rootfs_if_needed "$rootfs_path" "${RUNCVM_ROOTFS_SIZE:-256M}"
     
     log "Rootfs ready (from cache, resized)."
     
@@ -896,17 +880,7 @@ DBUNITEOF
   fi
   
   # Expand rootfs for Runtime
-  TARGET_SIZE="${RUNCVM_ROOTFS_SIZE:-256M}"
-  log "Resizing rootfs to $TARGET_SIZE..."
-  if command -v truncate >/dev/null 2>&1; then
-     truncate -s "$TARGET_SIZE" "$rootfs_path"
-  else
-     local size_bytes=$(( 2 * 1024 * 1024 * 1024 ))
-     busybox dd of="$rootfs_path" bs=1 count=0 seek="$size_bytes" 2>/dev/null || true
-  fi
-  if command -v resize2fs >/dev/null 2>&1; then
-     resize2fs "$rootfs_path" >/dev/null 2>&1
-  fi
+  resize_rootfs_if_needed "$rootfs_path" "${RUNCVM_ROOTFS_SIZE:-256M}"
 
 fi # End Cache Miss/No Cache logic
 
