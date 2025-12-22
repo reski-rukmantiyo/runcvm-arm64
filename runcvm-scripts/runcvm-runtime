@@ -579,12 +579,21 @@ if [ "$COMMAND" = "create" ]; then
       if [ -e "$src" ]; then
         # Check if this destination path was identified as a True PVC
         IS_TRUE_PVC=0
-        for tpvc_path in $TRUE_PVC_PATHS; do
-          if [ "$tpvc_path" = "$dst" ]; then
-            IS_TRUE_PVC=1
-            break
-          fi
-        done
+        
+        # Fast-path: Identify standard K8s volume paths (NFS, Secrets, ConfigMaps, etc.)
+        if [[ "$src" == /var/lib/kubelet/pods/*/volumes/kubernetes.io~*/* ]]; then
+           log "K8S: Identified K8s volume via path pattern: $src"
+           IS_TRUE_PVC=1
+        fi
+        
+        if [ "$IS_TRUE_PVC" = "0" ]; then
+          for tpvc_path in $TRUE_PVC_PATHS; do
+            if [ "$tpvc_path" = "$dst" ]; then
+              IS_TRUE_PVC=1
+              break
+            fi
+          done
+        fi
 
         # If it's a True PVC, redirect export to a unique directory
         if [ "$IS_TRUE_PVC" = "1" ]; then
