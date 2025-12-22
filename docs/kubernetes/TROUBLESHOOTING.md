@@ -145,7 +145,7 @@ The minimal guest environment may not have `mount`, `ip`, or libraries in the ex
 
 ## 7. Binary Mismatches (Host vs. Guest)
 **Symptoms:**
-- Logs show `required file not found` when executing `jq` or `kubectl`.
+- Logs show `required file not found` when executing `jq`, `tar`, or `kubectl`.
 - `docker exec` returns `Exit before auth`.
 
 **Cause: ELF Interpreter Conflict**

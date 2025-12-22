@@ -131,6 +131,7 @@ create_aliases() {
       blkid findmnt getent mke2fs resize2fs mount nc ping socat \
       dbclient dropbear dropbearkey \
       tput \
+      tar \
       debugfs
   do
     local cmd_path
