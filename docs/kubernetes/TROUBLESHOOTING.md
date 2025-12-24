@@ -182,3 +182,34 @@ RunCVM uses isolated debug logs for each container ID to prevent resource conten
 - Logs are stored at `/tmp/runcvm-<id>.debug`.
 - Use `sudo ls -l /tmp/runcvm*.debug` on the host to find the relevant log for your container.
 - These logs capture detailed runtime initialization and Kubernetes metadata discovery.
+
+---
+
+## 9. K3s RuntimeClass Configuration Issues
+**Symptoms:**
+- `kubectl describe pod` shows `Warning FailedCreatePodSandBox ... no runtime for "runcvm" is configured`.
+- k3s logs show `Unknown runtime handler "runcvm"`.
+
+**Possible Causes:**
+1.  **Missing RuntimeClass**: The Kubernetes `RuntimeClass` resource named `runcvm` has not been applied.
+2.  **Template Syntax Error**: The TOML in `config-v3.toml.tmpl` is invalid or uses an incorrect plugin path.
+3.  **Incorrect runtime_type**: The `runtime_type` is set to `runcvm` instead of `io.containerd.runc.v2`.
+
+**Solutions:**
+- **Verify RuntimeClass**: `kubectl get runtimeclass runcvm`
+- **Verify Template**: Ensure the section name is `[plugins."io.containerd.cri.v1.runtime".containerd.runtimes.runcvm]` (note the quotes).
+- **Restart K3s**: Changes to the template require a full restart: `sudo systemctl restart k3s`.
+
+---
+
+## 10. Firecracker KVM Errors
+**Symptoms:**
+- Pod logs show `Error: RunWithoutApiError(BuildMicroVMFromJson(StartMicroVM(Kvm(Kvm(Error(19))))))`.
+
+**Cause: Virtualization Disabled**
+Hardware virtualization (KVM) is not available or enabled on the node.
+
+**Solutions:**
+- **Check Device**: Run `ls -l /dev/kvm`. If it missing, KVM is not enabled in the BIOS/Firmware.
+- **Nested Virtualization**: If your Node is a VM (e.g. running on Apple Silicon via Colima or UTM), you must explicitly enable nested virtualization in the hypervisor settings.
+- **Permissions**: Ensure the k3s process has read/write access to `/dev/kvm`.
