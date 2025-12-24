@@ -72,31 +72,28 @@ To use `runcvm` with K3s, you must configure Containerd to recognize the custom 
 On **every node** where you want to run Firecracker workloads, create or edit:
 `/var/lib/rancher/k3s/agent/etc/containerd/config.toml.tmpl`
 
-Append the `runcvm` runtime plugin configuration:
+Append the `runcvm` runtime plugin configuration. Note that for modern K3s, the plugin path uses `io.containerd.cri.v1.runtime`.
 
 ```toml
-# ... (standard k3s configuration) ...
+{{ template "base" . }}
 
 # --- RUNCVM CONFIGURATION ---
-[plugins.cri.containerd.runtimes.runcvm]
-  runtime_type = "io.containerd.runc.v2"    # We use runc v2 shim
-  privileged_without_host_devices = false
-
-  [plugins.cri.containerd.runtimes.runcvm.options]
-    BinaryName = "/usr/local/bin/runcvm"     # Path to runcvm binary on the HOST
-    SystemdCgroup = true                     # Recommended for K3s
+[plugins."io.containerd.cri.v1.runtime".containerd.runtimes.runcvm]
+  runtime_type = "io.containerd.runc.v2"    # MUST be io.containerd.runc.v2
+  [plugins."io.containerd.cri.v1.runtime".containerd.runtimes.runcvm.options]
+    BinaryName = "/opt/runcvm/scripts/runcvm-runtime" # Path to the wrapper script
+    SystemdCgroup = true
 # -----------------------------
 ```
 
 ### Restart K3s
+Force k3s to regenerate `config.toml` by restarting the service:
 ```bash
 sudo systemctl restart k3s
-# OR for worker nodes:
-sudo systemctl restart k3s-agent
 ```
 
 ### Define the RuntimeClass
-Apply the following YAML to your cluster:
+Apply the following YAML to your cluster. **This is required** for Kubernetes to know which handler to use when a Pod specifies `runtimeClassName: runcvm`.
 
 ```yaml
 apiVersion: node.k8s.io/v1
