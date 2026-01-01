@@ -267,6 +267,35 @@ RunCVM has no other host dependencies, apart from Docker (or experimentally, Pod
 
 RunCVM is tested on Debian Bullseye and [GitHub Codespaces](https://github.com/codespaces/new?hide_repo_select=true&ref=main&repo=514606231).
 
+## Container Runtime
+
+RunCVM can be used as a container runtime by creating a RuntimeClass in Kubernetes.
+
+```yaml
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: runcvm
+handler: runcvm
+```
+
+For k3s, you have to enable custom runtimes in /var/lib/rancher/k3s/agent/etc/containerd/config.toml with following content:
+
+```yaml
+version = 2
+
+[plugins."io.containerd.cri.v1.runtime".containerd.runtimes.runc]
+  runtime_type = "io.containerd.runc.v2"
+  [plugins."io.containerd.cri.v1.runtime".containerd.runtimes.runc.options]
+    SystemdCgroup = true
+
+[plugins."io.containerd.cri.v1.runtime".containerd.runtimes.runcvm]
+  runtime_type = "io.containerd.runc.v2"
+  [plugins."io.containerd.cri.v1.runtime".containerd.runtimes.runcvm.options]
+    BinaryName = "/opt/runcvm/scripts/runcvm-runtime"
+    SystemdCgroup = true
+```
+
 ## Architecture support
 
 RunCVM supports both **x86_64 (amd64)** and **ARM64 (aarch64)** architectures.
